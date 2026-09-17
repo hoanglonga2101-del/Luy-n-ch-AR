@@ -1,0 +1,2109 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Camera, 
+  RotateCw, 
+  Lock, 
+  Unlock, 
+  Sliders, 
+  Maximize2, 
+  Minimize2, 
+  Sun, 
+  Palette, 
+  Grid, 
+  RefreshCw,
+  Sparkles,
+  HelpCircle,
+  Play,
+  Pause,
+  Zap,
+  ZapOff,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  Layers,
+  Check,
+  Move,
+  Type,
+  Edit3,
+  ArrowUp,
+  ArrowDown,
+  Plus,
+  Minus,
+  AlignLeft,
+  AlignCenter,
+  X,
+  FileText,
+  ZoomIn,
+  ZoomOut,
+  Smartphone,
+  Laptop,
+  PanelLeftClose,
+  PanelLeft,
+  PanelRightClose,
+  PanelRight,
+  ChevronUp,
+  ChevronDown
+} from 'lucide-react';
+import { GridType, ProjectionStyle, StrokePath, DeviceMode } from '../types';
+import { getStrokesForCharacter } from '../data/strokeData';
+import { playStrokeSound } from '../utils/audio';
+import { 
+  GOOGLE_15_ENGLISH_FONTS,
+  ENGLISH_PRIORITY_FONTS, 
+  OTHER_LANGUAGE_FONTS, 
+  ALL_FONTS, 
+  getFontOptionById, 
+  getDefaultFontForLanguage,
+  FontOption 
+} from '../data/fontOptions';
+import { FontSelector } from './FontSelector';
+import { VisualZoomControls, TEXT_COLOR_PRESETS } from './VisualZoomControls';
+import { ARControlTabs } from './ARControlTabs';
+
+export const NEON_COLOR_PRESETS = [
+  { id: 'neon_pink', label: 'Đỏ Neon', hex: '#FF0055', desc: 'Rực rỡ trên nền giấy trắng' },
+  { id: 'neon_green', label: 'Xanh Lá Neon', hex: '#00FF66', desc: 'Tương phản cao với bút xanh/đen' },
+  { id: 'neon_blue', label: 'Xanh Dương', hex: '#0099FF', desc: 'Dịu mắt, tương phản tốt với bút đỏ' },
+  { id: 'solid_black', label: 'Đen chuẩn', hex: '#000000', desc: 'Mực đen truyền thống' },
+  { id: 'bright_yellow', label: 'Vàng Bright', hex: '#FFCC00', desc: 'Sáng rõ trong điều kiện thiếu sáng' },
+];
+
+const QUICK_TEMPLATES = [
+  {
+    label: 'Ca dao 2 câu (Lục bát)',
+    text: 'Công cha như núi Thái Sơn\nNghĩa mẹ như nước trong nguồn chảy ra'
+  },
+  {
+    label: 'Thơ lục bát 4 câu',
+    text: 'Trâu ơi ta bảo trâu này\nTrâu ra ngoài ruộng trâu cày với ta\nCấy cày vốn nghiệp nông gia\nTa đây trâu đấy ai mà quản công'
+  },
+  {
+    label: 'Châm ngôn rèn chữ',
+    text: 'Nét chữ nết người\nRèn đức luyện tài'
+  },
+  {
+    label: 'Tiếng Anh 3 dòng',
+    text: 'Practice makes perfect\nEvery single day\nNever stop learning'
+  },
+  {
+    label: 'Thơ Đường 4 câu',
+    text: '白日依山尽\n黄河入海流\n欲穷千里目\n更上一层楼'
+  },
+  {
+    label: 'Haiku Nhật 3 câu',
+    text: '古池や\n蛙飛び込む\n水の音'
+  }
+];
+
+interface ARViewfinderProps {
+  text: string;
+  language: 'vi' | 'en' | 'ja' | 'zh';
+  reading?: string;
+  translation?: string;
+  tips?: string;
+  fontId?: string;
+  deviceMode?: DeviceMode;
+  onSelectDeviceMode?: (mode: DeviceMode) => void;
+  onOpenGuide: () => void;
+  onBackToMenu: () => void;
+}
+
+export const ARViewfinder: React.FC<ARViewfinderProps> = ({
+  text,
+  language,
+  reading,
+  translation,
+  tips,
+  fontId,
+  deviceMode: initialDeviceMode,
+  onSelectDeviceMode,
+  onOpenGuide,
+  onBackToMenu,
+}) => {
+  // Device Mode State: 'mobile' (phone) vs 'desktop' (computer/laptop)
+  const [deviceMode, setDeviceMode] = useState<DeviceMode>(() => {
+    if (initialDeviceMode) return initialDeviceMode;
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768 || 'ontouchstart' in window ? 'mobile' : 'desktop';
+    }
+    return 'mobile';
+  });
+
+  // Desktop Sidebars collapsed states
+  const [desktopLeftOpen, setDesktopLeftOpen] = useState<boolean>(true);
+  const [desktopRightOpen, setDesktopRightOpen] = useState<boolean>(true);
+
+  // Sync with prop if provided
+  useEffect(() => {
+    if (initialDeviceMode) {
+      setDeviceMode(initialDeviceMode);
+    }
+  }, [initialDeviceMode]);
+
+  // 1. Text & Multi-Line Management
+  const [currentText, setCurrentText] = useState<string>(text);
+  const [isEditingText, setIsEditingText] = useState<boolean>(false);
+  const [tempEditText, setTempEditText] = useState<string>(text);
+
+  useEffect(() => {
+    setCurrentText(text);
+    setTempEditText(text);
+  }, [text]);
+
+  const textLines: string[] = currentText.split('\n');
+  const isMultiLine = textLines.length > 1;
+
+  // Typography & Layout Controls
+  const [fontSizePx, setFontSizePx] = useState<number>(isMultiLine ? 36 : 56);
+  const [lineSpacingPx, setLineSpacingPx] = useState<number>(36);
+  const [lineHeightRatio, setLineHeightRatio] = useState<number>(language === 'vi' ? 1.8 : 1.6);
+  const [scrollOffsetY, setScrollOffsetY] = useState<number>(0);
+  const [focusedLineIndex, setFocusedLineIndex] = useState<number>(0);
+  const [focusLineMode, setFocusLineMode] = useState<boolean>(false);
+  const [textAlign, setTextAlign] = useState<'center' | 'left'>('center');
+
+  // Font Selection & Tracing Clarity State
+  const [selectedFontId, setSelectedFontId] = useState<string>(fontId || getDefaultFontForLanguage(language));
+  const [crispOutline, setCrispOutline] = useState<boolean>(true);
+  const [letterSpacingEm, setLetterSpacingEm] = useState<number>(language === 'en' ? 0.05 : 0.03);
+  const [boldTracing, setBoldTracing] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (fontId) {
+      setSelectedFontId(fontId);
+    } else {
+      setSelectedFontId(getDefaultFontForLanguage(language));
+    }
+  }, [fontId, language]);
+
+  const currentFontOption = getFontOptionById(selectedFontId);
+
+  // 2. Camera & Video Stream State
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [isSimulatedPaper, setIsSimulatedPaper] = useState<boolean>(false);
+
+  const handleDeviceModeChange = (newMode: DeviceMode) => {
+    setDeviceMode(newMode);
+    if (onSelectDeviceMode) {
+      onSelectDeviceMode(newMode);
+    }
+    // Auto switch camera facing: environment for mobile (rear camera facing paper), user for desktop (webcam)
+    if (newMode === 'mobile') {
+      setFacingMode('environment');
+    } else {
+      setFacingMode('user');
+    }
+  };
+  const [torchAvailable, setTorchAvailable] = useState<boolean>(false);
+  const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+  const [torchNotice, setTorchNotice] = useState<string | null>(null);
+
+  // 3. AR Projection Transform, Visual & Zoom Controls
+  const [opacity, setOpacity] = useState<number>(0.4); // 10% to 100%, default 40% (0.4)
+  const [textColor, setTextColor] = useState<string>('#FF0055'); // Default: Đỏ Neon (#FF0055)
+  const [zoomLevel, setZoomLevel] = useState<number>(1.0); // 1.0x to 5.0x
+  const [zoomCapabilities, setZoomCapabilities] = useState<{ min: number; max: number; step: number } | null>(null);
+  const [isHardwareZoomSupported, setIsHardwareZoomSupported] = useState<boolean>(false);
+  const [isHardwareZoomActive, setIsHardwareZoomActive] = useState<boolean>(false);
+  const [scale, setScale] = useState<number>(1.1);
+  const [rotation, setRotation] = useState<number>(0);
+  const [position, setPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const dragStartRef = useRef<{ x: number; y: number; startPos: { x: number; y: number } }>({
+    x: 0,
+    y: 0,
+    startPos: { x: 0, y: 0 }
+  });
+  const rafRef = useRef<number | null>(null);
+  const pendingPosRef = useRef<{ x: number; y: number } | null>(null);
+  const [isSmooth60fps, setIsSmooth60fps] = useState<boolean>(true);
+  const [showNudgePad, setShowNudgePad] = useState<boolean>(false);
+
+  // Micro-adjustment Nudge handler for phones
+  const handleNudge = (dx: number, dy: number) => {
+    setPosition((prev) => ({
+      x: prev.x + dx,
+      y: prev.y + dy,
+    }));
+    playStrokeSound(1.2);
+  };
+
+  // 4. Physical Experience: Screen Lock / Freeze Mode
+  const [isScreenLocked, setIsScreenLocked] = useState<boolean>(false);
+  const [showLockToast, setShowLockToast] = useState<boolean>(false);
+
+  // 5. Visual Calibration: Grid & Style
+  const [gridType, setGridType] = useState<GridType>(
+    language === 'vi' ? 'oly_vi' : language === 'en' ? 'four_line_en' : 'tian_zh'
+  );
+  const [gridOpacity, setGridOpacity] = useState<number>(0.5);
+  const [showGrid, setShowGrid] = useState<boolean>(true);
+  const [projectionStyle, setProjectionStyle] = useState<ProjectionStyle>('neon_ar');
+  // On mobile phones, start with collapsed controls so the camera & real paper are immediately visible without lag
+  const [showControls, setShowControls] = useState<boolean>(false);
+
+  // 6. Step-by-Step Stroke Guidance
+  const characters: string[] = Array.from(currentText.replace(/\s+/g, ' '));
+  const [selectedCharIndex, setSelectedCharIndex] = useState<number>(0);
+  const activeChar: string = characters[selectedCharIndex] || characters[0] || 'A';
+  const charStrokes: StrokePath[] = getStrokesForCharacter(activeChar);
+  const isSingleCharWithStrokes = textLines.length === 1 && currentText.trim().length === 1 && charStrokes.length > 0;
+
+  const [activeTab, setActiveTab] = useState<'text_layout' | 'font_selector' | 'visual_zoom' | 'step_stroke' | 'opacity_size' | 'grid_style'>(
+    isSingleCharWithStrokes ? 'step_stroke' : 'text_layout'
+  );
+  const [desktopLeftTab, setDesktopLeftTab] = useState<'text_layout' | 'font_selector'>('text_layout');
+  const [desktopRightTab, setDesktopRightTab] = useState<'opacity_size' | 'grid_style' | 'step_stroke'>('opacity_size');
+
+  // Stroke Step Mode: 1 to charStrokes.length, or 0 (All strokes view)
+  const [strokeMode, setStrokeMode] = useState<'step' | 'full'>('step');
+  const [currentStep, setCurrentStep] = useState<number>(1);
+  const [isAutoPlaying, setIsAutoPlaying] = useState<boolean>(false);
+  const [stepDuration, setStepDuration] = useState<number>(1200); // ms per stroke step
+  const [showFutureOutline, setShowFutureOutline] = useState<boolean>(true);
+
+  // Universal Controls open/collapsed state
+  const isControlsOpen = deviceMode === 'desktop'
+    ? (desktopLeftOpen || desktopRightOpen)
+    : showControls;
+
+  const handleToggleUniversalControls = () => {
+    if (deviceMode === 'desktop') {
+      const willOpen = !(desktopLeftOpen || desktopRightOpen);
+      setDesktopLeftOpen(willOpen);
+      setDesktopRightOpen(willOpen);
+    } else {
+      setShowControls((prev) => !prev);
+    }
+  };
+
+  // Initialize camera stream with mobile-optimized resolution and framerate to eliminate lag
+  useEffect(() => {
+    let currentStream: MediaStream | null = null;
+
+    async function startCamera() {
+      setCameraError(null);
+      setIsTorchOn(false);
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Trình duyệt không hỗ trợ API camera.');
+        }
+
+        const isMobileDevice = typeof window !== 'undefined' && (window.innerWidth < 768 || 'ontouchstart' in window);
+        const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
+
+        // Mobile performance optimization: match native camera orientation (720x1280 in portrait or 1280x720 in landscape)
+        // to prevent phone GPU/CPU thermal throttling and frame dropping
+        const constraints: MediaStreamConstraints = {
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: isMobileDevice ? (isPortrait ? 720 : 1280) : 1920 },
+            height: { ideal: isMobileDevice ? (isPortrait ? 1280 : 720) : 1080 },
+            frameRate: { ideal: 30, max: 30 }
+          },
+          audio: false
+        };
+
+        let mediaStream: MediaStream;
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (firstErr) {
+          console.warn('Optimized camera constraint failed, retrying with basic constraint:', firstErr);
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: facingMode } },
+            audio: false
+          });
+        }
+
+        currentStream = mediaStream;
+        setStream(mediaStream);
+        setIsSimulatedPaper(false);
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+        }
+
+        // Check if device video track supports Torch & Hardware Zoom
+        const videoTrack = mediaStream.getVideoTracks()[0];
+        if (videoTrack) {
+          if (typeof videoTrack.getCapabilities === 'function') {
+            const capabilities = videoTrack.getCapabilities() as any;
+            setTorchAvailable(Boolean(capabilities?.torch));
+            if (capabilities?.zoom) {
+              setIsHardwareZoomSupported(true);
+              setZoomCapabilities({
+                min: capabilities.zoom.min || 1,
+                max: capabilities.zoom.max || 5,
+                step: capabilities.zoom.step || 0.1,
+              });
+            } else {
+              setIsHardwareZoomSupported(false);
+              setZoomCapabilities(null);
+            }
+          } else {
+            setTorchAvailable(false);
+            setIsHardwareZoomSupported(false);
+          }
+        }
+      } catch (err: any) {
+        console.warn('Camera error:', err);
+        setCameraError(err?.message || 'Không thể mở camera sau. Vui lòng cho phép quyền truy cập camera.');
+        setIsSimulatedPaper(true);
+      }
+    }
+
+    if (!isSimulatedPaper) {
+      startCamera();
+    }
+
+    return () => {
+      if (currentStream) {
+        currentStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [facingMode, isSimulatedPaper]);
+
+  // Camera Zoom Handler (Hardware MediaStreamTrack applyConstraints + Digital CSS Zoom Fallback)
+  const handleZoomChange = async (newZoom: number) => {
+    const clampedZoom = Math.min(5.0, Math.max(1.0, parseFloat(newZoom.toFixed(1))));
+    setZoomLevel(clampedZoom);
+
+    if (!stream) {
+      setIsHardwareZoomActive(false);
+      return;
+    }
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) {
+      setIsHardwareZoomActive(false);
+      return;
+    }
+
+    if (isHardwareZoomSupported && typeof (videoTrack as any).applyConstraints === 'function') {
+      try {
+        const minZ = zoomCapabilities?.min ?? 1;
+        const maxZ = zoomCapabilities?.max ?? 5;
+        const targetHardwareZoom = Math.min(maxZ, Math.max(minZ, clampedZoom));
+        await (videoTrack as any).applyConstraints({
+          advanced: [{ zoom: targetHardwareZoom }]
+        });
+        setIsHardwareZoomActive(true);
+      } catch (err) {
+        console.warn('Hardware zoom applyConstraints failed, falling back to CSS Digital Zoom:', err);
+        setIsHardwareZoomActive(false);
+      }
+    } else {
+      setIsHardwareZoomActive(false);
+    }
+  };
+
+  // Flash / Torch Toggle Handler
+  const handleToggleTorch = async () => {
+    if (!stream) {
+      setTorchNotice('Camera chưa sẵn sàng để bật đèn pin.');
+      setTimeout(() => setTorchNotice(null), 3000);
+      return;
+    }
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    try {
+      const nextTorchState = !isTorchOn;
+      await (videoTrack as any).applyConstraints({
+        advanced: [{ torch: nextTorchState }]
+      });
+      setIsTorchOn(nextTorchState);
+      setTorchNotice(nextTorchState ? 'Đã bật đèn Flash chiếu giấy' : 'Đã tắt đèn Flash');
+      setTimeout(() => setTorchNotice(null), 2500);
+    } catch (err) {
+      console.warn('Torch constraint error:', err);
+      setTorchNotice('Thiết bị này không hỗ trợ đèn Flash (thường chỉ có trên điện thoại di động).');
+      setTimeout(() => setTorchNotice(null), 3500);
+    }
+  };
+
+  // Toggle Full Screen Lock
+  const toggleScreenLock = () => {
+    const nextState = !isScreenLocked;
+    setIsScreenLocked(nextState);
+    if (nextState) {
+      setShowControls(false);
+      setShowLockToast(true);
+      setTimeout(() => setShowLockToast(false), 3500);
+    }
+  };
+
+  // Pointer drag events for aligning overlay onto real notebook paper
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (isScreenLocked) return;
+    // Don't trigger drag when tapping buttons, inputs, or textareas
+    if ((e.target as HTMLElement).closest('button, input, textarea, a')) return;
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // safe fallback
+    }
+
+    setIsDragging(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      startPos: { ...position }
+    };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isDragging || isScreenLocked) return;
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
+    pendingPosRef.current = {
+      x: Math.round(dragStartRef.current.startPos.x + dx),
+      y: Math.round(dragStartRef.current.startPos.y + dy),
+    };
+
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        if (pendingPosRef.current) {
+          setPosition(pendingPosRef.current);
+        }
+        rafRef.current = null;
+      });
+    }
+  };
+
+  const handlePointerUp = (e?: React.PointerEvent) => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (pendingPosRef.current) {
+      setPosition(pendingPosRef.current);
+    }
+    if (e) {
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch (err) {}
+    }
+    setIsDragging(false);
+  };
+
+  // Multi-line line navigation & scrolling
+  const handleNextLine = () => {
+    if (focusedLineIndex < textLines.length - 1) {
+      const nextIdx = focusedLineIndex + 1;
+      setFocusedLineIndex(nextIdx);
+      // Smooth scroll offset matching font size + line spacing
+      const estimatedStep = Math.round(fontSizePx * (lineHeightRatio - 0.5) + lineSpacingPx);
+      setScrollOffsetY(nextIdx * estimatedStep);
+      playStrokeSound(1.2);
+    }
+  };
+
+  const handlePrevLine = () => {
+    if (focusedLineIndex > 0) {
+      const prevIdx = focusedLineIndex - 1;
+      setFocusedLineIndex(prevIdx);
+      const estimatedStep = Math.round(fontSizePx * (lineHeightRatio - 0.5) + lineSpacingPx);
+      setScrollOffsetY(prevIdx * estimatedStep);
+      playStrokeSound(0.9);
+    }
+  };
+
+  const handleResetPanAndScroll = () => {
+    setPosition({ x: 0, y: 0 });
+    setScrollOffsetY(0);
+    setFocusedLineIndex(0);
+    setScale(1.1);
+    setRotation(0);
+  };
+
+  const handleApplyText = () => {
+    if (!tempEditText.trim()) return;
+    setCurrentText(tempEditText.trim());
+    setFocusedLineIndex(0);
+    setScrollOffsetY(0);
+    setIsEditingText(false);
+  };
+
+  // Auto-play timer for Step-by-Step Stroke Animation
+  useEffect(() => {
+    let timer: number | null = null;
+    if (isAutoPlaying && strokeMode === 'step') {
+      timer = window.setInterval(() => {
+        setCurrentStep((prev) => {
+          if (prev >= charStrokes.length) {
+            setIsAutoPlaying(false);
+            return charStrokes.length;
+          }
+          const next = prev + 1;
+          playStrokeSound(next * 0.2 + 0.9);
+          return next;
+        });
+      }, stepDuration);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isAutoPlaying, strokeMode, charStrokes.length, stepDuration]);
+
+  // Reset alignment
+  const handleResetPosition = () => {
+    setPosition({ x: 0, y: 0 });
+    setScale(1.1);
+    setRotation(0);
+    setOpacity(0.7);
+    setScrollOffsetY(0);
+    setFocusedLineIndex(0);
+  };
+
+  // Switch to next/previous stroke step
+  const handleNextStep = () => {
+    if (currentStep < charStrokes.length) {
+      const next = currentStep + 1;
+      setCurrentStep(next);
+      playStrokeSound(next * 0.2 + 0.9);
+    }
+  };
+
+  const handlePrevStep = () => {
+    if (currentStep > 1) {
+      setCurrentStep(currentStep - 1);
+      playStrokeSound(currentStep * 0.2 + 0.8);
+    }
+  };
+
+  const handleRestartSteps = () => {
+    setCurrentStep(1);
+    playStrokeSound(1.0);
+  };
+
+  // Current active stroke metadata
+  const activeStrokeInfo = charStrokes[currentStep - 1] || charStrokes[0];
+
+  // Font class for sentence/fallback text
+  const getFontClass = () => {
+    return currentFontOption.className || 'font-sans';
+  };
+
+  // Ink style definitions
+  const getInkColors = () => {
+    const isMobile = deviceMode === 'mobile';
+    const enableGlow = !isSmooth60fps && !isMobile;
+    switch (projectionStyle) {
+      case 'neon_ar':
+        return {
+          current: '#ef4444', // Vibrant Red for current pen target
+          completed: '#06b6d4', // Cyan neon for finished lines
+          ghost: '#64748b', // Slate for remaining outline
+          glow: enableGlow ? 'drop-shadow(0 0 8px rgba(6, 182, 212, 0.8))' : 'none',
+          textClass: enableGlow ? 'text-cyan-400 drop-shadow-[0_0_8px_rgba(6,182,212,0.8)]' : 'text-cyan-400 font-bold',
+        };
+      case 'red_guide':
+        return {
+          current: '#f59e0b', // Amber for current
+          completed: '#dc2626', // Red ink for finished lines
+          ghost: '#cbd5e1',
+          glow: enableGlow ? 'drop-shadow(0 0 4px rgba(220, 38, 38, 0.5))' : 'none',
+          textClass: enableGlow ? 'text-rose-600 drop-shadow-[0_0_4px_rgba(225,29,72,0.4)]' : 'text-rose-600 font-bold',
+        };
+      case 'solid_ink':
+        return {
+          current: '#ef4444',
+          completed: '#0f172a', // Deep black ink
+          ghost: '#94a3b8',
+          glow: 'none',
+          textClass: 'text-neutral-900',
+        };
+      case 'dotted_trace':
+        return {
+          current: '#ef4444',
+          completed: '#2563eb', // Blue pen
+          ghost: '#cbd5e1',
+          glow: 'none',
+          textClass: 'text-blue-600',
+        };
+      case 'blueprint':
+        return {
+          current: '#f43f5e',
+          completed: '#38bdf8',
+          ghost: '#475569',
+          glow: enableGlow ? 'drop-shadow(0 0 6px rgba(56,189,248,0.7))' : 'none',
+          textClass: enableGlow ? 'text-sky-300 drop-shadow-[0_0_6px_rgba(56,189,248,0.7)]' : 'text-sky-300 font-bold',
+        };
+      default:
+        return {
+          current: '#ef4444',
+          completed: '#06b6d4',
+          ghost: '#64748b',
+          glow: 'none',
+          textClass: 'text-cyan-400',
+        };
+    }
+  };
+
+  const ink = getInkColors();
+
+  const arControlTabsProps = {
+    selectedFontId,
+    setSelectedFontId,
+    playStrokeSound,
+    language,
+    crispOutline,
+    setCrispOutline,
+    letterSpacingEm,
+    setLetterSpacingEm,
+    boldTracing,
+    setBoldTracing,
+    fontSizePx,
+    setFontSizePx,
+    lineSpacingPx,
+    setLineSpacingPx,
+    setLineHeightRatio,
+    scrollOffsetY,
+    setScrollOffsetY,
+    textLines,
+    focusedLineIndex,
+    handlePrevLine,
+    handleNextLine,
+    textAlign,
+    setTextAlign,
+    focusLineMode,
+    setFocusLineMode,
+    currentText,
+    setTempEditText,
+    setIsEditingText,
+    strokeMode,
+    setStrokeMode,
+    charStrokes,
+    currentStep,
+    setCurrentStep,
+    handleRestartSteps,
+    handlePrevStep,
+    handleNextStep,
+    isAutoPlaying,
+    setIsAutoPlaying,
+    tips,
+    opacity,
+    setOpacity,
+    textColor,
+    setTextColor,
+    zoomLevel,
+    handleZoomChange,
+    isHardwareZoomActive,
+    scale,
+    setScale,
+    rotation,
+    setRotation,
+    position,
+    handleResetPosition,
+    showGrid,
+    setShowGrid,
+    gridType,
+    setGridType,
+    gridOpacity,
+    setGridOpacity,
+    projectionStyle,
+    setProjectionStyle,
+  };
+
+  return (
+    <div 
+      className="relative w-full h-full min-h-[580px] bg-black overflow-hidden flex flex-col select-none touch-none"
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      {/* 1. CAMERA FEED (Full Screen Background) or Realistic Paper Fallback */}
+      {!isSimulatedPaper ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none origin-center"
+          style={{
+            transform: !isHardwareZoomActive && zoomLevel > 1 ? `scale(${zoomLevel})` : undefined,
+            willChange: 'transform',
+          }}
+        />
+      ) : (
+        <div 
+          className="absolute inset-0 w-full h-full bg-[#f2ede4] z-0 flex items-center justify-center p-6 transition-transform duration-100 ease-out origin-center"
+          style={{
+            transform: zoomLevel > 1 ? `scale(${zoomLevel})` : undefined,
+          }}
+        >
+          <div className="w-full max-w-2xl h-[85%] bg-white shadow-2xl rounded-2xl border border-neutral-300 p-8 relative overflow-hidden flex flex-col justify-between">
+            <div className="absolute inset-0 opacity-20 pointer-events-none bg-[radial-gradient(#64748b_1px,transparent_1px)] [background-size:20px_20px]" />
+            <div className="text-xs text-neutral-500 font-mono flex items-center justify-between border-b pb-2">
+              <span className="font-semibold">MÔ PHỎNG GIẤY TRẮNG TRÊN BÀN</span>
+              <span className="text-amber-600 font-medium">Chế độ xem trước (Camera chưa kết nối)</span>
+            </div>
+            <div className="flex-1 flex flex-col items-center justify-center text-neutral-400 text-sm font-medium gap-2">
+              <p>Đặt điện thoại trên cốc/giá đỡ và bật camera sau để nhìn thấy giấy thật qua màn hình.</p>
+              <button
+                onClick={() => setIsSimulatedPaper(false)}
+                className="mt-2 px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs shadow transition flex items-center gap-1.5"
+              >
+                <Camera className="w-4 h-4" /> Bật lại Camera sau
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Optical Alignment Frame Corners */}
+      <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center">
+        <div className="absolute top-5 left-5 w-8 h-8 border-t-2 border-l-2 border-white/40 rounded-tl-lg" />
+        <div className="absolute top-5 right-5 w-8 h-8 border-t-2 border-r-2 border-white/40 rounded-tr-lg" />
+        <div className="absolute bottom-5 left-5 w-8 h-8 border-b-2 border-l-2 border-white/40 rounded-bl-lg" />
+        <div className="absolute bottom-5 right-5 w-8 h-8 border-b-2 border-r-2 border-white/40 rounded-br-lg" />
+      </div>
+
+      {/* 2. AR OVERLAY LAYER (Transparent Vector SVG + Real-paper Grids) */}
+      <div 
+        id="ar-projection-layer"
+        className={`absolute inset-0 z-20 flex items-center justify-center ${isScreenLocked ? 'cursor-default pointer-events-none' : 'cursor-grab active:cursor-grabbing'}`}
+        onPointerDown={handlePointerDown}
+      >
+        <div
+          style={{
+            transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg)`,
+            opacity: opacity,
+            transition: isDragging ? 'none' : 'transform 0.05s ease-out',
+          }}
+          className="relative max-w-[94vw] max-h-[85vh] p-4 flex flex-col items-center justify-center"
+        >
+          {/* Practice Frame Container */}
+          <div 
+            className="relative p-6 sm:p-8 rounded-3xl border-2 border-cyan-400/50 shadow-2xl flex flex-col items-center justify-center"
+            style={{
+              backgroundColor: projectionStyle === 'solid_ink' ? 'rgba(255, 255, 255, 0.35)' : 'rgba(0, 0, 0, 0.25)',
+              minWidth: charStrokes.length > 0 && characters.length === 1 ? '320px' : 'auto',
+              minHeight: charStrokes.length > 0 && characters.length === 1 ? '320px' : 'auto',
+            }}
+          >
+            {/* Real Notebook Ruling Grids */}
+            {showGrid && (
+              <div 
+                className="absolute inset-0 pointer-events-none rounded-3xl overflow-hidden"
+                style={{ opacity: gridOpacity }}
+              >
+                {/* 1. Lưới Ô ly Tiểu học Việt Nam (4 ô ly chuẩn dòng kẻ) */}
+                {gridType === 'oly_vi' && (
+                  <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <pattern id="ar_oly_pattern_full" width="28" height="28" patternUnits="userSpaceOnUse">
+                        <rect width="28" height="28" fill="none" stroke="currentColor" strokeWidth="0.6" strokeOpacity="0.45" />
+                        <line x1="0" y1="7" x2="28" y2="7" stroke="currentColor" strokeWidth="0.35" strokeDasharray="1.5,1.5" strokeOpacity="0.35" />
+                        <line x1="0" y1="14" x2="28" y2="14" stroke="currentColor" strokeWidth="0.35" strokeDasharray="1.5,1.5" strokeOpacity="0.35" />
+                        <line x1="0" y1="21" x2="28" y2="21" stroke="currentColor" strokeWidth="0.35" strokeDasharray="1.5,1.5" strokeOpacity="0.35" />
+                        <line x1="0" y1="28" x2="28" y2="28" stroke="currentColor" strokeWidth="1" strokeOpacity="0.8" />
+                      </pattern>
+                    </defs>
+                    <rect width="100%" height="100%" fill="url(#ar_oly_pattern_full)" className="text-cyan-400" />
+                  </svg>
+                )}
+
+                {/* 2. Lưới Chữ Điền (田字格 - Tian Zi Ge) */}
+                {gridType === 'tian_zh' && (
+                  <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="98%" height="98%" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-rose-500/80" />
+                    <line x1="0" y1="50%" x2="100%" y2="50%" stroke="currentColor" strokeDasharray="4,4" strokeWidth="1.2" className="text-rose-500/80" />
+                    <line x1="50%" y1="0" x2="50%" y2="100%" stroke="currentColor" strokeDasharray="4,4" strokeWidth="1.2" className="text-rose-500/80" />
+                  </svg>
+                )}
+
+                {/* 3. Lưới Chữ Mễ (米字格 - Mi Zi Ge) */}
+                {gridType === 'mizi_zh' && (
+                  <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="98%" height="98%" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-rose-500/80" />
+                    <line x1="0" y1="50%" x2="100%" y2="50%" stroke="currentColor" strokeDasharray="4,4" strokeWidth="1.2" className="text-rose-500/80" />
+                    <line x1="50%" y1="0" x2="50%" y2="100%" stroke="currentColor" strokeDasharray="4,4" strokeWidth="1.2" className="text-rose-500/80" />
+                    <line x1="0" y1="0" x2="100%" y2="100%" stroke="currentColor" strokeDasharray="3,3" strokeWidth="0.8" className="text-rose-400/60" />
+                    <line x1="100%" y1="0" x2="0" y2="100%" stroke="currentColor" strokeDasharray="3,3" strokeWidth="0.8" className="text-rose-400/60" />
+                  </svg>
+                )}
+
+                {/* 4. 4 Dòng kẻ Tiểu học tiếng Anh (Four-line English) */}
+                {gridType === 'four_line_en' && (
+                  <div className="absolute inset-0 flex flex-col justify-around py-4">
+                    <div className="w-full border-t-2 border-rose-500/80" />
+                    <div className="w-full border-t border-dashed border-sky-400/80" />
+                    <div className="w-full border-t-2 border-sky-600/90" />
+                    <div className="w-full border-t-2 border-rose-500/80" />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* A. VECTOR SVG STROKE RENDERING (If single character with stroke data) */}
+            {charStrokes.length > 0 && characters.length === 1 ? (
+              <div className="relative z-10 flex flex-col items-center">
+                <svg
+                  viewBox="0 0 100 100"
+                  className="w-56 h-56 sm:w-64 sm:h-64 overflow-visible"
+                  style={{ filter: ink.glow }}
+                >
+                  {/* Future Strokes (Ghost Guide Outline) */}
+                  {showFutureOutline && charStrokes.map((s) => {
+                    const isFuture = strokeMode === 'step' && s.id > currentStep;
+                    if (!isFuture) return null;
+                    return (
+                      <path
+                        key={`ghost-${s.id}`}
+                        d={s.d}
+                        fill="none"
+                        stroke={ink.ghost}
+                        strokeWidth="3.5"
+                        strokeDasharray="3,3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={0.4}
+                      />
+                    );
+                  })}
+
+                  {/* Completed Strokes */}
+                  {charStrokes.map((s) => {
+                    const isCompleted = strokeMode === 'full' || s.id < currentStep;
+                    if (!isCompleted) return null;
+                    return (
+                      <g key={`comp-${s.id}`}>
+                        <path
+                          d={s.d}
+                          fill="none"
+                          stroke={textColor}
+                          strokeWidth="5.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        {/* Stroke order number badge */}
+                        <circle
+                          cx={s.startPoint.x}
+                          cy={s.startPoint.y}
+                          r="3"
+                          fill={textColor}
+                        />
+                        <text
+                          x={s.startPoint.x}
+                          y={s.startPoint.y + 1}
+                          fill="#ffffff"
+                          fontSize="3.5"
+                          fontWeight="bold"
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                        >
+                          {s.id}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* Current Active Stroke (Highlighted in vibrant color with pen touchdown indicator) */}
+                  {strokeMode === 'step' && activeStrokeInfo && (
+                    <g key={`active-${activeStrokeInfo.id}`}>
+                      {/* Active Path with animated pulse */}
+                      <path
+                        d={activeStrokeInfo.d}
+                        fill="none"
+                        stroke={ink.current}
+                        strokeWidth="6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="animate-pulse"
+                      />
+
+                      {/* Pen Tip Touchdown Circle (Điểm đặt bút thật trên giấy) */}
+                      <circle
+                        cx={activeStrokeInfo.startPoint.x}
+                        cy={activeStrokeInfo.startPoint.y}
+                        r="6"
+                        className="fill-red-500/30 animate-ping"
+                      />
+                      <circle
+                        cx={activeStrokeInfo.startPoint.x}
+                        cy={activeStrokeInfo.startPoint.y}
+                        r="4"
+                        fill="#ef4444"
+                        stroke="#ffffff"
+                        strokeWidth="1"
+                      />
+                      <text
+                        x={activeStrokeInfo.startPoint.x}
+                        y={activeStrokeInfo.startPoint.y + 0.5}
+                        fill="#ffffff"
+                        fontSize="3.5"
+                        fontWeight="900"
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                      >
+                        {activeStrokeInfo.id}
+                      </text>
+                    </g>
+                  )}
+                </svg>
+
+                {/* Subtitle with stroke name & instruction */}
+                {strokeMode === 'step' && activeStrokeInfo && (
+                  <div className="mt-3 px-3 py-1 bg-neutral-900/95 border border-neutral-700/80 rounded-full text-xs font-semibold text-white shadow flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    <span>Nét {currentStep}/{charStrokes.length}: {activeStrokeInfo.label}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* B. MULTI-LINE TEXT & TYPOGRAPHY OVERLAY (Real physical paper tracing) */
+              <div className="relative z-10 w-full flex flex-col items-center">
+                {reading && (
+                  <div className="text-xs sm:text-sm font-medium tracking-wide mb-2 opacity-90 font-mono text-cyan-300 text-center">
+                    {reading}
+                  </div>
+                )}
+
+                {/* Multi-line scroll & pan container */}
+                <div 
+                  className="relative w-full max-w-2xl px-2 transition-transform duration-100 ease-out"
+                  style={{
+                    transform: `translateY(${-scrollOffsetY}px)`,
+                  }}
+                >
+                  {textLines.map((lineStr, idx) => {
+                    const isFocused = idx === focusedLineIndex;
+                    const isDimmed = focusLineMode && !isFocused;
+
+                    return (
+                      <div
+                        key={`ar-line-${idx}`}
+                        className={`relative transition-all duration-200 ${
+                          textAlign === 'left' ? 'text-left' : 'text-center'
+                        } ${isDimmed ? 'opacity-20 filter blur-[0.4px]' : 'opacity-100'}`}
+                        style={{
+                          marginBottom: idx === textLines.length - 1 ? 0 : `${lineSpacingPx}px`,
+                          lineHeight: lineHeightRatio,
+                        }}
+                      >
+                        {/* Line index badge for multi-line practice */}
+                        {textLines.length > 1 && (
+                          <div className={`flex items-center mb-1 ${textAlign === 'left' ? 'justify-start' : 'justify-center'}`}>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setFocusedLineIndex(idx);
+                              }}
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-mono flex items-center gap-1 border transition ${
+                                isFocused
+                                  ? 'bg-cyan-500 text-neutral-950 font-bold border-cyan-300 shadow-md shadow-cyan-500/40 ring-1 ring-cyan-200'
+                                  : 'bg-neutral-900/80 text-neutral-400 border-neutral-700/80 hover:text-white'
+                              }`}
+                              title={`Chuyển trọng tâm viết sang dòng ${idx + 1}`}
+                            >
+                              <span>Dòng {idx + 1}/{textLines.length}</span>
+                              {isFocused && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />}
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Line text with custom font size, high-legibility font & crisp outline */}
+                        <div
+                          className={`select-none transition-all ar-tracing-text ${getFontClass()} ${
+                            crispOutline ? 'ar-crisp-outline' : ''
+                          } ${boldTracing ? 'font-bold' : 'font-normal'}`}
+                          style={{
+                            fontFamily: currentFontOption.fontFamily,
+                            fontSize: `${fontSizePx}px`,
+                            letterSpacing: `${letterSpacingEm}em`,
+                            fontStyle: 'normal',
+                            color: textColor,
+                            filter: textColor === '#000000' 
+                              ? 'none' 
+                              : `drop-shadow(0 0 6px ${textColor}99)`,
+                            textShadow: textColor === '#000000' 
+                              ? '0 1px 2px rgba(0,0,0,0.5)' 
+                              : `0 0 8px ${textColor}55`,
+                          }}
+                        >
+                          {lineStr || ' '}
+                        </div>
+
+                        {/* Notebook line ruling guide under line if grid is active */}
+                        {showGrid && (
+                          <div 
+                            className="w-full h-px mt-1.5 pointer-events-none opacity-40 border-b border-dashed"
+                            style={{
+                              borderColor: projectionStyle === 'solid_ink' ? '#374151' : '#38bdf8'
+                            }}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {translation && (
+                  <div className="text-xs sm:text-sm mt-3 opacity-80 max-w-md font-sans text-neutral-300 text-center">
+                    {translation}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Alignment indicator when unlocked */}
+            {!isScreenLocked && (
+              <div className="absolute -top-3 -right-3 px-2.5 py-1 bg-cyan-500 text-neutral-950 font-bold text-[10px] rounded-full shadow-lg flex items-center gap-1 animate-pulse">
+                <Move className="w-3 h-3" /> Kéo để căn giấy
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 3. PHYSICAL EXPERIENCE TOOLBAR - TOP HUD */}
+      <div className="absolute top-0 inset-x-0 z-30 p-2 sm:p-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex items-center justify-between pointer-events-auto">
+        {/* Left: Back Button & Essential Controls */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          <button
+            id="ar-back-btn"
+            onClick={onBackToMenu}
+            className="px-2.5 sm:px-3 py-2 bg-neutral-900/95 hover:bg-neutral-800 text-white rounded-xl text-xs font-semibold border border-neutral-700/80 transition flex items-center gap-1 shadow cursor-pointer active:scale-95"
+          >
+            ← Thoát
+          </button>
+
+          {/* Device Switcher (Mobile vs Desktop) - hidden on small mobile to save space */}
+          <div className="hidden sm:flex items-center gap-0.5 bg-neutral-900/95 p-0.5 sm:p-1 rounded-xl border border-neutral-700/80 shadow">
+            <button
+              id="ar-device-mobile-btn"
+              onClick={() => handleDeviceModeChange('mobile')}
+              className={`px-2 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
+                deviceMode === 'mobile'
+                  ? 'bg-cyan-500/25 text-cyan-400 border border-cyan-500/50 shadow-sm'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+              title="Chế độ Điện thoại (Camera sau, thanh cuộn ngang, nút chạm to)"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Điện thoại</span>
+            </button>
+            <button
+              id="ar-device-desktop-btn"
+              onClick={() => handleDeviceModeChange('desktop')}
+              className={`px-2 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
+                deviceMode === 'desktop'
+                  ? 'bg-indigo-500/25 text-indigo-300 border border-indigo-500/50 shadow-sm'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+              title="Chế độ Máy tính (Webcam trước, Bảng điều khiển Sidebar 2 bên)"
+            >
+              <Laptop className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Máy tính</span>
+            </button>
+          </div>
+
+          {/* Quick Edit Text Modal Button */}
+          <button
+            id="ar-edit-text-btn"
+            onClick={() => {
+              setTempEditText(currentText);
+              setIsEditingText(true);
+            }}
+            className="px-2.5 sm:px-3 py-2 bg-neutral-900/95 hover:bg-neutral-800 text-white rounded-xl text-xs font-semibold border border-neutral-700/80 transition flex items-center gap-1.5 shadow cursor-pointer active:scale-95"
+            title="Nhập văn bản nhiều dòng hoặc đổi câu luyện viết"
+          >
+            <FileText className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Sửa chữ</span>
+          </button>
+
+          {/* Multi-line indicator badge */}
+          {textLines.length > 1 && (
+            <div className="hidden sm:flex items-center gap-1 px-2.5 py-1 bg-cyan-950/80 border border-cyan-800/60 rounded-xl text-xs font-mono text-cyan-300">
+              <span>{focusedLineIndex + 1}/{textLines.length} dòng</span>
+            </div>
+          )}
+
+          {/* Direct Font Dropdown Selector in HUD (shown on md+ screens) */}
+          <div className="hidden md:flex items-center gap-1.5 bg-neutral-900/95 hover:bg-neutral-800 px-2.5 py-1.5 rounded-xl border border-neutral-700/80 shadow">
+            <Type className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <select
+              id="ar-hud-font-dropdown"
+              value={selectedFontId}
+              onChange={(e) => {
+                setSelectedFontId(e.target.value);
+                playStrokeSound(1.1);
+              }}
+              className="bg-transparent text-white text-xs font-semibold focus:outline-none cursor-pointer max-w-[130px] xs:max-w-[170px] sm:max-w-[210px] truncate"
+              title="Chọn trong 15 Google Fonts Tiếng Anh"
+            >
+              <optgroup label="🌟 15 Google Fonts Tiếng Anh">
+                {GOOGLE_15_ENGLISH_FONTS.map((font) => (
+                  <option key={font.id} value={font.id} className="bg-neutral-900 text-white">
+                    {font.order}. {font.vietnameseTitle}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="🌏 Font chuyên dụng khác">
+                {OTHER_LANGUAGE_FONTS.map((font) => (
+                  <option key={font.id} value={font.id} className="bg-neutral-900 text-white">
+                    {font.vietnameseTitle}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
+
+          {/* Quick HUD Zoom Toggle */}
+          <button
+            id="ar-hud-zoom-btn"
+            onClick={() => {
+              const nextZoom = zoomLevel >= 3.0 ? 1.0 : parseFloat((zoomLevel + 0.5).toFixed(1));
+              handleZoomChange(nextZoom);
+              playStrokeSound(1.2);
+            }}
+            className="hidden md:flex items-center gap-1 bg-neutral-900/95 hover:bg-neutral-800 px-2.5 py-1.5 rounded-xl border border-neutral-700/80 text-xs transition shadow text-neutral-300"
+            title="Nhấn để đổi nhanh mức Zoom (1x -> 1.5x -> 2x -> 2.5x -> 3x -> 1x)"
+          >
+            <ZoomIn className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="font-mono text-cyan-300 font-bold">{zoomLevel.toFixed(1)}x</span>
+            <span className="text-[9px] text-neutral-500 font-mono">{isHardwareZoomActive ? 'Opt' : 'Dig'}</span>
+          </button>
+        </div>
+
+        {/* Center Torch Notice (if any) */}
+        {torchNotice && (
+          <div className="hidden sm:flex px-3 py-1 bg-amber-500 text-neutral-950 text-xs font-bold rounded-full shadow-lg animate-in fade-in duration-200">
+            {torchNotice}
+          </div>
+        )}
+
+        {/* Right Action Buttons */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* UNIVERSAL COLLAPSE / EXPAND BUTTON (Desktop only, mobile has bottom dock) */}
+          {deviceMode === 'desktop' && (
+            <button
+              id="ar-top-collapse-btn"
+              onClick={handleToggleUniversalControls}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 shadow cursor-pointer ${
+                isControlsOpen
+                  ? 'bg-neutral-900/95 hover:bg-neutral-800 text-cyan-300 border-cyan-500/50 hover:border-cyan-400'
+                  : 'bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white border-cyan-400/60 shadow-lg shadow-cyan-950/60 ring-2 ring-cyan-400/30'
+              }`}
+              title={isControlsOpen ? 'Thu gọn các bảng điều khiển để quan sát mặt giấy rộng nhất' : 'Mở lại các bảng điều khiển AR'}
+            >
+              {isControlsOpen ? (
+                <>
+                  <Minimize2 className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Thu gọn</span>
+                </>
+              ) : (
+                <>
+                  <Sliders className="w-3.5 h-3.5 text-white" />
+                  <span>Mở bảng</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {/* FLASH / TORCH BUTTON (Chiếu sáng mặt giấy thật) */}
+          <button
+            id="ar-flash-btn"
+            onClick={handleToggleTorch}
+            className={`px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold border transition flex items-center gap-1.5 shadow cursor-pointer active:scale-95 ${
+              isTorchOn 
+                ? 'bg-amber-400 text-neutral-950 border-amber-300 shadow-amber-500/50' 
+                : 'bg-neutral-900/95 text-neutral-300 border-neutral-700/80 hover:text-white'
+            }`}
+            title={isTorchOn ? 'Tắt đèn Flash chiếu giấy' : 'Bật đèn Flash chiếu sáng mặt giấy thật'}
+          >
+            {isTorchOn ? <Zap className="w-3.5 h-3.5 fill-current text-neutral-950" /> : <ZapOff className="w-3.5 h-3.5 text-amber-400" />}
+            <span className="hidden xs:inline">{isTorchOn ? 'Đèn bật' : 'Flash'}</span>
+          </button>
+
+          {/* SCREEN LOCK (Desktop fallback; Mobile has it on bottom bar) */}
+          <button
+            id="ar-lock-toggle"
+            onClick={toggleScreenLock}
+            className={`hidden sm:flex px-3 py-2 rounded-xl text-xs font-bold border transition items-center gap-1.5 shadow cursor-pointer active:scale-95 ${
+              isScreenLocked 
+                ? 'bg-red-500 text-white border-red-400 shadow-lg shadow-red-900/50 animate-pulse' 
+                : 'bg-neutral-900/95 text-white border-neutral-700/80 hover:bg-neutral-800'
+            }`}
+            title={isScreenLocked ? 'Màn hình đang khóa chống trượt nét. Nhấn để mở khóa' : 'Khóa màn hình để tì tay viết bút thật mà không lo lệch chữ'}
+          >
+            {isScreenLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5 text-neutral-400" />}
+            <span>{isScreenLocked ? 'Đã khóa' : 'Khóa'}</span>
+          </button>
+
+          {/* Switch Camera */}
+          {!cameraError && (
+            <button
+              id="ar-camera-toggle"
+              onClick={() => setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'))}
+              className="p-2 rounded-xl bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700/80 transition shadow cursor-pointer active:scale-95"
+              title="Đổi camera trước / sau"
+            >
+              <RotateCw className="w-4 h-4 text-cyan-300" />
+            </button>
+          )}
+
+          {/* Setup Guide */}
+          <button
+            id="ar-guide-btn"
+            onClick={onOpenGuide}
+            className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500/60 transition shadow cursor-pointer active:scale-95"
+            title="Xem cách kê điện thoại trên cốc/sách"
+          >
+            <HelpCircle className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* 4. FULL SCREEN TOUCH SHIELD WHEN LOCKED (Blocks all inadvertent palm/finger taps) */}
+      {isScreenLocked && (
+        <div 
+          id="ar-screen-lock-shield"
+          className="absolute inset-0 z-40 touch-none pointer-events-auto flex flex-col items-center justify-between p-6 bg-transparent"
+        >
+          {/* Floating Unlock Pill (The ONLY interactive element when locked) */}
+          <div className="w-full flex items-center justify-center pt-12">
+            <button
+              id="ar-floating-unlock-btn"
+              onClick={toggleScreenLock}
+              className="px-6 py-3 rounded-full bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-2xl border-2 border-white/80 flex items-center gap-2 transform transition hover:scale-105 active:scale-95 animate-bounce"
+            >
+              <Unlock className="w-4 h-4" />
+              <span>Chạm vào đây để MỞ KHÓA</span>
+            </button>
+          </div>
+
+          {/* Persistent calm reminder at bottom */}
+          <div className="px-4 py-2 bg-neutral-950/90 border border-white/20 rounded-2xl text-xs text-neutral-200 shadow-xl text-center max-w-sm">
+            🔒 <strong>Đã cố định màn hình:</strong> Bạn có thể tì tay lên mép điện thoại hoặc viết bút thật trên giấy mà không sợ trượt nét.
+          </div>
+        </div>
+      )}
+
+      {/* Lock Notification Toast */}
+      {showLockToast && (
+        <div className="absolute top-16 inset-x-4 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-50 p-3 bg-red-600 text-white text-xs font-semibold rounded-2xl shadow-2xl border border-red-400 flex items-center justify-center gap-2 animate-in slide-in-from-top duration-300">
+          <Lock className="w-4 h-4 shrink-0" />
+          <span>Màn hình đã khóa hoàn toàn! Bạn có thể thoải mái tì tay viết bút thật.</span>
+        </div>
+      )}
+
+      {/* 4B. FLOATING MULTI-LINE QUICK NAVIGATOR (On-the-fly line scrolling while holding real pen) */}
+      {!isScreenLocked && textLines.length > 1 && (
+        <div 
+          id="ar-floating-line-nav"
+          className="absolute left-3 top-20 z-30 flex flex-col items-center gap-1.5 p-1.5 bg-neutral-900/95 border border-neutral-700/80 rounded-2xl shadow-2xl pointer-events-auto"
+        >
+          <button
+            id="quick-nav-prev-line"
+            onClick={(e) => {
+              e.stopPropagation();
+              handlePrevLine();
+            }}
+            disabled={focusedLineIndex <= 0}
+            className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-white transition shadow"
+            title="Dòng trước (Cuộn lên)"
+          >
+            <ArrowUp className="w-4 h-4 text-cyan-400" />
+          </button>
+
+          <div className="px-1.5 py-1 bg-neutral-950 rounded-lg text-[10px] font-mono font-bold text-white text-center min-w-[36px]">
+            {focusedLineIndex + 1}/{textLines.length}
+          </div>
+
+          <button
+            id="quick-nav-next-line"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleNextLine();
+            }}
+            disabled={focusedLineIndex >= textLines.length - 1}
+            className="p-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-30 text-white transition shadow shadow-cyan-950"
+            title="Dòng sau (Cuộn xuống)"
+          >
+            <ArrowDown className="w-4 h-4 text-white" />
+          </button>
+
+          <div className="w-full h-px bg-neutral-700 my-0.5" />
+
+          <button
+            id="quick-nav-focus-toggle"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFocusLineMode(!focusLineMode);
+            }}
+            className={`p-2 rounded-xl transition ${
+              focusLineMode 
+                ? 'bg-amber-500 text-neutral-950 font-bold shadow' 
+                : 'bg-neutral-800 text-neutral-400 hover:text-white'
+            }`}
+            title={focusLineMode ? 'Đang làm sáng duy nhất dòng viết hiện tại' : 'Làm sáng duy nhất dòng viết hiện tại (làm mờ dòng khác)'}
+          >
+            <Eye className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* 4C. FLOATING QUICK VISUAL & ZOOM CONTROLLER (Desktop when Right Sidebar collapsed) */}
+      {!isScreenLocked && deviceMode === 'desktop' && !desktopRightOpen && (
+        <div 
+          id="ar-floating-quick-visual-bar"
+          className="absolute right-3 top-20 z-30 flex flex-col items-center gap-1.5 p-1.5 bg-neutral-900/95 border border-neutral-700/80 rounded-2xl shadow-2xl pointer-events-auto"
+        >
+          {/* Zoom In */}
+          <button
+            id="quick-zoom-in"
+            onClick={() => handleZoomChange(zoomLevel + 0.5)}
+            disabled={zoomLevel >= 5.0}
+            className="p-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-white transition shadow"
+            title="Phóng to Camera (+0.5x)"
+          >
+            <ZoomIn className="w-3.5 h-3.5 text-cyan-400" />
+          </button>
+
+          {/* Current Zoom badge */}
+          <button
+            id="quick-zoom-reset"
+            onClick={() => handleZoomChange(1.0)}
+            className="px-1.5 py-1 bg-neutral-950 rounded-lg text-[10px] font-mono font-bold text-cyan-300 text-center min-w-[36px] hover:bg-neutral-800 transition"
+            title="Bấm để quay về Zoom 1.0x"
+          >
+            {zoomLevel.toFixed(1)}x
+          </button>
+
+          {/* Zoom Out */}
+          <button
+            id="quick-zoom-out"
+            onClick={() => handleZoomChange(zoomLevel - 0.5)}
+            disabled={zoomLevel <= 1.0}
+            className="p-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-white transition shadow"
+            title="Thu nhỏ Camera (-0.5x)"
+          >
+            <ZoomOut className="w-3.5 h-3.5 text-neutral-300" />
+          </button>
+
+          <div className="w-full h-px bg-neutral-700 my-0.5" />
+
+          {/* Quick Opacity Toggle / Preset (40% default) */}
+          <button
+            id="quick-opacity-pill"
+            onClick={() => {
+              const nextOpacity = opacity <= 0.25 ? 0.40 : opacity <= 0.45 ? 0.70 : opacity <= 0.75 ? 1.0 : 0.20;
+              setOpacity(nextOpacity);
+            }}
+            className="px-1 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-750 text-[10px] font-mono font-bold text-amber-300 text-center min-w-[36px] transition flex flex-col items-center"
+            title="Độ mờ chữ mẫu: Bấm để đổi nhanh (20% -> 40% -> 70% -> 100%)"
+          >
+            <Sun className="w-3 h-3 mb-0.5 text-amber-400" />
+            <span>{Math.round(opacity * 100)}%</span>
+          </button>
+
+          <div className="w-full h-px bg-neutral-700 my-0.5" />
+
+          {/* Quick Color Dots (5 Presets) */}
+          <div className="flex flex-col gap-1 items-center py-0.5">
+            {NEON_COLOR_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                id={`quick-dot-${preset.id}`}
+                onClick={() => {
+                  setTextColor(preset.hex);
+                  playStrokeSound(1.2);
+                }}
+                className={`w-4 h-4 rounded-full border transition transform hover:scale-125 ${
+                  textColor.toLowerCase() === preset.hex.toLowerCase()
+                    ? 'border-white scale-110 shadow-lg ring-1 ring-white/70'
+                    : 'border-white/30 opacity-70 hover:opacity-100'
+                }`}
+                style={{ 
+                  backgroundColor: preset.hex,
+                  boxShadow: preset.hex === '#000000' ? 'none' : `0 0 6px ${preset.hex}99`
+                }}
+                title={`Màu ${preset.label} (${preset.hex})`}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 5. AR RESPONSIVE CONTROLS: MOBILE DRAWER VS DESKTOP DUAL SIDEBARS */}
+      {!isScreenLocked && (
+        <>
+          {/* 5A. DESKTOP MODE (Fixed Dual Sidebars: Left = Text/Fonts, Right = Visuals/Grid/Strokes) */}
+          {deviceMode === 'desktop' && (
+            <>
+              {/* Left Sidebar: Chữ & Font mẫu */}
+              {desktopLeftOpen ? (
+                <aside 
+                  id="desktop-left-sidebar"
+                  className="absolute left-4 top-20 bottom-8 z-30 w-80 max-w-[340px] bg-neutral-900/95 border border-neutral-700/80 rounded-3xl p-4 text-white shadow-2xl pointer-events-auto flex flex-col animate-in slide-in-from-left duration-200"
+                >
+                  {/* Header & Tabs */}
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-2.5 mb-3">
+                    <div className="flex items-center gap-1">
+                      <button
+                        id="desktop-tab-text-layout"
+                        onClick={() => setDesktopLeftTab('text_layout')}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 ${
+                          desktopLeftTab === 'text_layout'
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Type className="w-3.5 h-3.5" /> Chữ & Dòng kẻ
+                      </button>
+
+                      <button
+                        id="desktop-tab-font-selector"
+                        onClick={() => setDesktopLeftTab('font_selector')}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 ${
+                          desktopLeftTab === 'font_selector'
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Type className="w-3.5 h-3.5" /> Thư viện Font
+                      </button>
+                    </div>
+
+                    <button
+                      id="desktop-close-left-sidebar"
+                      onClick={() => setDesktopLeftOpen(false)}
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1 border border-neutral-700 shadow-sm"
+                      title="Thu gọn bảng bên trái"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Thu gọn</span>
+                    </button>
+                  </div>
+
+                  {/* Scrollable Tab Content */}
+                  <div className="flex-1 overflow-y-auto pr-1">
+                    <ARControlTabs 
+                      activeTab={desktopLeftTab}
+                      onSwitchTab={(tab) => setDesktopLeftTab(tab)}
+                      {...arControlTabsProps}
+                    />
+                  </div>
+
+                  {/* Bottom Quick Collapse Button */}
+                  <button
+                    id="desktop-footer-close-left"
+                    onClick={() => setDesktopLeftOpen(false)}
+                    className="mt-2.5 w-full py-2 bg-neutral-800/80 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-neutral-700/80 transition shrink-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Thu gọn bảng chữ</span>
+                  </button>
+                </aside>
+              ) : (
+                <button
+                  id="desktop-open-left-sidebar-btn"
+                  onClick={() => setDesktopLeftOpen(true)}
+                  className="absolute left-4 top-20 z-30 px-3.5 py-2 bg-neutral-900/95 hover:bg-neutral-800 border border-neutral-700 text-cyan-400 rounded-2xl text-xs font-bold flex items-center gap-1.5 shadow-xl pointer-events-auto transition hover:scale-105"
+                  title="Mở bảng Chữ & Font"
+                >
+                  <PanelLeft className="w-4 h-4" />
+                  <span>Bảng Chữ mẫu ►</span>
+                </button>
+              )}
+
+              {/* Right Sidebar: Hiệu ứng, Zoom, Lưới, Nét vẽ */}
+              {desktopRightOpen ? (
+                <aside 
+                  id="desktop-right-sidebar"
+                  className="absolute right-4 top-20 bottom-8 z-30 w-84 max-w-[350px] bg-neutral-900/95 border border-neutral-700/80 rounded-3xl p-4 text-white shadow-2xl pointer-events-auto flex flex-col animate-in slide-in-from-right duration-200"
+                >
+                  {/* Header & Tabs */}
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-2.5 mb-3">
+                    <div className="flex items-center gap-1 overflow-x-auto">
+                      <button
+                        id="desktop-tab-opacity-size"
+                        onClick={() => setDesktopRightTab('opacity_size')}
+                        className={`px-2 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                          desktopRightTab === 'opacity_size'
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Sun className="w-3.5 h-3.5" /> Hiệu ứng & Zoom
+                      </button>
+
+                      <button
+                        id="desktop-tab-grid-style"
+                        onClick={() => setDesktopRightTab('grid_style')}
+                        className={`px-2 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                          desktopRightTab === 'grid_style'
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Grid className="w-3.5 h-3.5" /> Lưới
+                      </button>
+
+                      {charStrokes.length > 0 && (
+                        <button
+                          id="desktop-tab-step-stroke"
+                          onClick={() => setDesktopRightTab('step_stroke')}
+                          className={`px-2 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                            desktopRightTab === 'step_stroke'
+                              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm'
+                              : 'text-neutral-400 hover:text-white'
+                          }`}
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Từng nét
+                        </button>
+                      )}
+                    </div>
+
+                    <button
+                      id="desktop-close-right-sidebar"
+                      onClick={() => setDesktopRightOpen(false)}
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1 border border-neutral-700 shadow-sm shrink-0 ml-1"
+                      title="Thu gọn bảng bên phải"
+                    >
+                      <span>Thu gọn</span>
+                      <ChevronRight className="w-3.5 h-3.5 text-cyan-400" />
+                    </button>
+                  </div>
+
+                  {/* Scrollable Tab Content */}
+                  <div className="flex-1 overflow-y-auto pr-1">
+                    <ARControlTabs 
+                      activeTab={desktopRightTab}
+                      onSwitchTab={(tab) => setDesktopRightTab(tab)}
+                      {...arControlTabsProps}
+                    />
+                  </div>
+
+                  {/* Bottom Quick Collapse Button */}
+                  <button
+                    id="desktop-footer-close-right"
+                    onClick={() => setDesktopRightOpen(false)}
+                    className="mt-2.5 w-full py-2 bg-neutral-800/80 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-neutral-700/80 transition shrink-0"
+                  >
+                    <span>Thu gọn bảng hiệu ứng</span>
+                    <ChevronRight className="w-3.5 h-3.5 text-cyan-400" />
+                  </button>
+                </aside>
+              ) : (
+                <button
+                  id="desktop-open-right-sidebar-btn"
+                  onClick={() => setDesktopRightOpen(true)}
+                  className="absolute right-4 top-20 z-30 px-3.5 py-2 bg-neutral-900/95 hover:bg-neutral-800 border border-neutral-700 text-emerald-400 rounded-2xl text-xs font-bold flex items-center gap-1.5 shadow-xl pointer-events-auto transition hover:scale-105"
+                  title="Mở bảng Hiệu ứng & Zoom"
+                >
+                  <span>◄ Bảng Hiệu ứng & Zoom</span>
+                  <PanelRight className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* Desktop Bottom Status Bar (Clean, Minimal, Non-obtrusive) */}
+              <div className="absolute bottom-3 inset-x-0 z-20 flex justify-center pointer-events-none">
+                <div className="bg-neutral-900/95 border border-neutral-800 rounded-full px-4 py-1.5 text-[11px] text-neutral-300 flex items-center gap-3 shadow-lg pointer-events-auto">
+                  <span className="flex items-center gap-1 font-mono text-cyan-400">
+                    <ZoomIn className="w-3 h-3" /> {zoomLevel.toFixed(1)}x
+                  </span>
+                  <span className="text-neutral-600">•</span>
+                  <span className="flex items-center gap-1 font-mono text-amber-300">
+                    <Sun className="w-3 h-3" /> {Math.round(opacity * 100)}%
+                  </span>
+                  <span className="text-neutral-600">•</span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-full border border-white/60" style={{ backgroundColor: textColor }} />
+                    <span className="font-mono text-[10px]">{textColor}</span>
+                  </span>
+                  <span className="text-neutral-600">•</span>
+                  <button
+                    onClick={() => setIsScreenLocked(true)}
+                    className="text-red-400 hover:text-red-300 font-semibold flex items-center gap-1 hover:underline"
+                  >
+                    <Lock className="w-3 h-3" /> Khóa nét
+                  </button>
+                  <span className="text-neutral-600">•</span>
+                  <button
+                    id="desktop-toggle-sidebars-bar"
+                    onClick={() => {
+                      const willOpen = !(desktopLeftOpen || desktopRightOpen);
+                      setDesktopLeftOpen(willOpen);
+                      setDesktopRightOpen(willOpen);
+                    }}
+                    className="text-cyan-300 hover:text-white font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                  >
+                    {desktopLeftOpen || desktopRightOpen ? (
+                      <>
+                        <Minimize2 className="w-3 h-3 text-cyan-400" />
+                        <span>Thu gọn 2 bảng</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sliders className="w-3 h-3 text-cyan-400" />
+                        <span>Mở lại 2 bảng</span>
+                      </>
+                    )}
+                  </button>
+                  {isSimulatedPaper && (
+                    <>
+                      <span className="text-neutral-600">•</span>
+                      <button
+                        onClick={() => setIsSimulatedPaper(false)}
+                        className="text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1 hover:underline"
+                      >
+                        <Camera className="w-3 h-3" /> Bật Camera thật
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Desktop Floating Open Button when both sidebars are collapsed */}
+              {!desktopLeftOpen && !desktopRightOpen && (
+                <div className="absolute bottom-12 inset-x-0 z-30 flex justify-center pointer-events-none">
+                  <button
+                    id="desktop-floating-open-all-btn"
+                    onClick={() => {
+                      setDesktopLeftOpen(true);
+                      setDesktopRightOpen(true);
+                    }}
+                    className="px-5 py-2.5 rounded-full text-xs font-bold bg-gradient-to-r from-cyan-600 via-teal-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white border border-cyan-400/50 shadow-2xl transition-all active:scale-95 flex items-center gap-2 pointer-events-auto ring-2 ring-cyan-500/40"
+                  >
+                    <Sliders className="w-4 h-4 text-white" />
+                    <span>Mở bảng điều khiển AR</span>
+                    <ChevronUp className="w-4 h-4 text-cyan-200 animate-bounce" />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* 5B. MOBILE MODE (Touch-friendly Quick Dock + Expandable Bottom Drawer) */}
+          {deviceMode === 'mobile' && (
+            <div className="absolute bottom-0 inset-x-0 z-30 pb-3 pt-1 px-2.5 sm:px-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent flex flex-col items-center pointer-events-auto">
+              {!showControls ? (
+                /* Sleek, Touch-Friendly Bottom Dock on Mobile */
+                <div className="w-full max-w-md flex flex-col items-center gap-1.5 animate-in fade-in slide-in-from-bottom duration-200">
+                  {/* Floating Micro-Nudge D-Pad for phones (Effortless alignment without phone shaking) */}
+                  {showNudgePad && (
+                    <div className="w-full bg-neutral-900/95 border border-cyan-500/50 rounded-2xl p-2.5 shadow-2xl flex flex-col items-center gap-1.5 animate-in zoom-in-95 duration-150 backdrop-blur-md">
+                      <div className="flex items-center justify-between w-full px-1 text-[11px] text-cyan-300 font-bold border-b border-neutral-800 pb-1">
+                        <span className="flex items-center gap-1">
+                          <Move className="w-3 h-3" /> Căn chỉnh vi mô (Chống rung lắc điện thoại)
+                        </span>
+                        <button 
+                          onClick={() => setShowNudgePad(false)} 
+                          className="text-neutral-400 hover:text-white px-1.5 py-0.5 rounded-md hover:bg-neutral-800 text-xs"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <div className="flex flex-col items-center gap-1 py-1">
+                        <button 
+                          onClick={() => handleNudge(0, -6)} 
+                          className="w-12 h-9 rounded-xl bg-neutral-800 hover:bg-neutral-700 active:scale-90 text-cyan-300 flex items-center justify-center border border-neutral-700 shadow-sm"
+                          title="Dịch lên trên 6px"
+                        >
+                          <ArrowUp className="w-4 h-4" />
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => handleNudge(-6, 0)} 
+                            className="w-12 h-9 rounded-xl bg-neutral-800 hover:bg-neutral-700 active:scale-90 text-cyan-300 flex items-center justify-center border border-neutral-700 shadow-sm"
+                            title="Dịch sang trái 6px"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          <button 
+                            onClick={handleResetPosition} 
+                            className="px-3 h-9 rounded-xl bg-neutral-950 hover:bg-neutral-850 active:scale-90 text-amber-300 font-mono text-[11px] font-bold border border-neutral-700 shadow-sm"
+                            title="Đặt lại chữ vào chính giữa màn hình"
+                          >
+                            Căn giữa
+                          </button>
+                          <button 
+                            onClick={() => handleNudge(6, 0)} 
+                            className="w-12 h-9 rounded-xl bg-neutral-800 hover:bg-neutral-700 active:scale-90 text-cyan-300 flex items-center justify-center border border-neutral-700 shadow-sm"
+                            title="Dịch sang phải 6px"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <button 
+                          onClick={() => handleNudge(0, 6)} 
+                          className="w-12 h-9 rounded-xl bg-neutral-800 hover:bg-neutral-700 active:scale-90 text-cyan-300 flex items-center justify-center border border-neutral-700 shadow-sm"
+                          title="Dịch xuống dưới 6px"
+                        >
+                          <ArrowDown className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Visual Drag Hint & 60fps Indicator */}
+                  <div className="w-full flex items-center justify-between px-1">
+                    <div className="px-3 py-1 bg-neutral-900/90 border border-neutral-700/80 rounded-full text-[11px] font-medium text-neutral-300 flex items-center gap-1.5 shadow-md">
+                      <Move className="w-3.5 h-3.5 text-cyan-400 animate-pulse shrink-0" />
+                      <span>Kéo chữ hoặc bấm Căn chỉnh để khớp ô ly</span>
+                    </div>
+
+                    <button
+                      id="mobile-quick-smooth-btn"
+                      onClick={() => setIsSmooth60fps(prev => !prev)}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold flex items-center gap-1 border transition shadow-sm ${
+                        isSmooth60fps
+                          ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50'
+                          : 'bg-neutral-900/80 text-neutral-400 border-neutral-700'
+                      }`}
+                      title={isSmooth60fps ? 'Đang bật 60fps mượt mà chống trễ' : 'Bật 60fps chống lag'}
+                    >
+                      <Zap className="w-3 h-3 text-emerald-400" />
+                      <span>{isSmooth60fps ? '60fps Mượt' : 'Đồ họa HQ'}</span>
+                    </button>
+                  </div>
+
+                  {/* Quick Control Bar with 48px Touch Targets */}
+                  <div className="w-full bg-neutral-900/95 border border-neutral-700/90 rounded-2xl p-1.5 sm:p-2 shadow-2xl flex items-center justify-between gap-1">
+                    {/* Micro-Nudge D-Pad Toggle */}
+                    <button
+                      id="mobile-quick-nudge-btn"
+                      onClick={() => setShowNudgePad(prev => !prev)}
+                      className={`h-11 px-2.5 rounded-xl active:scale-95 text-xs font-bold flex items-center gap-1 border transition shrink-0 cursor-pointer ${
+                        showNudgePad 
+                          ? 'bg-cyan-500 text-neutral-950 border-cyan-300 shadow-md shadow-cyan-950' 
+                          : 'bg-neutral-800 hover:bg-neutral-750 text-cyan-300 border-neutral-700'
+                      }`}
+                      title="Bật các nút điều hướng vi mô Lên/Xuống/Trái/Phải"
+                    >
+                      <Move className="w-4 h-4" />
+                      <span className="hidden xs:inline">Dịch nét</span>
+                    </button>
+
+                    {/* Scale Down (-) */}
+                    <button
+                      id="mobile-quick-scale-down"
+                      onClick={() => setScale((s) => Math.max(0.5, parseFloat((s - 0.1).toFixed(1))))}
+                      className="w-11 h-11 rounded-xl bg-neutral-800 hover:bg-neutral-750 active:scale-95 text-white flex items-center justify-center border border-neutral-700 shrink-0 cursor-pointer"
+                      title="Thu nhỏ nét chữ"
+                    >
+                      <Minus className="w-5 h-5 text-neutral-200" />
+                    </button>
+
+                    {/* Scale Reset & Badge */}
+                    <button
+                      id="mobile-quick-reset-pos"
+                      onClick={handleResetPosition}
+                      className="px-2 h-11 rounded-xl bg-neutral-800 hover:bg-neutral-750 active:scale-95 text-cyan-300 font-mono font-bold text-xs flex flex-col items-center justify-center border border-neutral-700 shrink-0 min-w-[48px] cursor-pointer"
+                      title="Bấm để đặt chữ về giữa"
+                    >
+                      <span className="text-[9px] text-neutral-400 font-normal leading-none mb-0.5">Cỡ</span>
+                      <span className="leading-none">{Math.round(scale * 100)}%</span>
+                    </button>
+
+                    {/* Scale Up (+) */}
+                    <button
+                      id="mobile-quick-scale-up"
+                      onClick={() => setScale((s) => Math.min(2.5, parseFloat((s + 0.1).toFixed(1))))}
+                      className="w-11 h-11 rounded-xl bg-neutral-800 hover:bg-neutral-750 active:scale-95 text-white flex items-center justify-center border border-neutral-700 shrink-0 cursor-pointer"
+                      title="Phóng to nét chữ"
+                    >
+                      <Plus className="w-5 h-5 text-cyan-400" />
+                    </button>
+
+                    <div className="w-px h-7 bg-neutral-750 shrink-0 mx-0.5" />
+
+                    {/* Opacity Cycle (30% -> 55% -> 85% -> 100%) */}
+                    <button
+                      id="mobile-quick-opacity-cycle"
+                      onClick={() => {
+                        const next = opacity <= 0.35 ? 0.55 : opacity <= 0.65 ? 0.85 : opacity <= 0.9 ? 1.0 : 0.30;
+                        setOpacity(next);
+                      }}
+                      className="h-11 px-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-750 active:scale-95 text-amber-300 font-bold text-xs flex items-center gap-1 border border-neutral-700 shrink-0 cursor-pointer"
+                      title="Đổi độ mờ nét chữ (30% -> 55% -> 85% -> 100%)"
+                    >
+                      <Sun className="w-4 h-4 text-amber-400" />
+                      <span>{Math.round(opacity * 100)}%</span>
+                    </button>
+
+                    {/* Color Presets Cycle */}
+                    <button
+                      id="mobile-quick-color-cycle"
+                      onClick={() => {
+                        const colors = ['#FF0055', '#00FF66', '#0099FF', '#FFCC00', '#000000'];
+                        const currentIndex = colors.indexOf(textColor);
+                        const nextColor = colors[(currentIndex + 1) % colors.length];
+                        setTextColor(nextColor);
+                        playStrokeSound(1.2);
+                      }}
+                      className="w-11 h-11 rounded-xl bg-neutral-800 hover:bg-neutral-750 active:scale-95 flex items-center justify-center border border-neutral-700 shrink-0 cursor-pointer"
+                      title="Bấm để đổi màu mực phản quang"
+                    >
+                      <span 
+                        className="w-5 h-5 rounded-full border-2 border-white shadow-sm"
+                        style={{ backgroundColor: textColor }}
+                      />
+                    </button>
+
+                    <div className="w-px h-7 bg-neutral-750 shrink-0 mx-0.5" />
+
+                    {/* Lock Screen Button (Crucial for writing without screen moving) */}
+                    <button
+                      id="mobile-quick-lock-btn"
+                      onClick={toggleScreenLock}
+                      className="h-11 px-3 rounded-xl bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold text-xs flex items-center gap-1 shadow-lg shadow-red-950/60 shrink-0 cursor-pointer"
+                      title="Khóa màn hình để tì tay viết bút thật mà không lo lệch chữ"
+                    >
+                      <Lock className="w-4 h-4" />
+                      <span>Khóa</span>
+                    </button>
+
+                    {/* Expand Full Drawer Button */}
+                    <button
+                      id="mobile-quick-open-more"
+                      onClick={() => setShowControls(true)}
+                      className="h-11 px-2.5 rounded-xl bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-200 active:scale-95 font-bold text-xs flex items-center gap-1 border border-cyan-500/40 shrink-0 cursor-pointer"
+                      title="Mở thêm tùy chọn nâng cao (Font, Lưới, Từng nét)"
+                    >
+                      <Sliders className="w-4 h-4 text-cyan-400" />
+                      <span className="hidden xs:inline">Thêm</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Mobile Bottom Sheet Drawer (Expanded with reduced height so it doesn't block screen) */
+                <div 
+                  id="mobile-ar-drawer"
+                  className="w-full max-w-lg bg-neutral-900/95 border border-neutral-700/80 rounded-3xl p-3 sm:p-4 text-white shadow-2xl animate-in slide-in-from-bottom duration-200 max-h-[60vh] flex flex-col"
+                >
+                  {/* Top drag bar indicator & Close Button */}
+                  <div className="flex items-center justify-between pb-2 mb-2 border-b border-neutral-800">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-8 h-1 bg-neutral-600 rounded-full mr-1" />
+                      <span className="text-[11px] font-bold text-neutral-300">Cài đặt chi tiết AR</span>
+                    </div>
+
+                    <button
+                      id="close-mobile-drawer-btn"
+                      onClick={() => setShowControls(false)}
+                      className="px-3 py-1.5 rounded-xl bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-200 hover:text-white transition flex items-center gap-1.5 text-xs font-bold border border-cyan-500/40 shadow-sm cursor-pointer"
+                      title="Thu gọn bảng điều khiển"
+                    >
+                      <ChevronDown className="w-4 h-4 text-cyan-400" />
+                      <span>Thu gọn</span>
+                    </button>
+                  </div>
+
+                  {/* Tab Navigation for Mobile (Scrollable horizontally) */}
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-2 mb-3 shrink-0">
+                    <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
+                      <button
+                        id="tab-text-layout"
+                        onClick={() => setActiveTab('text_layout')}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                          activeTab === 'text_layout' 
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm' 
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Type className="w-3.5 h-3.5" /> Chữ & Dòng
+                      </button>
+
+                      <button
+                        id="tab-font-selector"
+                        onClick={() => setActiveTab('font_selector')}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                          activeTab === 'font_selector' 
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm' 
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Type className="w-3.5 h-3.5" /> Font chữ (15)
+                      </button>
+
+                      {charStrokes.length > 0 && (
+                        <button
+                          id="tab-step-stroke"
+                          onClick={() => setActiveTab('step_stroke')}
+                          className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                            activeTab === 'step_stroke' 
+                              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm' 
+                              : 'text-neutral-400 hover:text-white'
+                          }`}
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Từng nét
+                        </button>
+                      )}
+
+                      <button
+                        id="tab-opacity-size"
+                        onClick={() => setActiveTab('opacity_size')}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                          activeTab === 'opacity_size' 
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm' 
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Sun className="w-3.5 h-3.5" /> Hiệu ứng & Zoom
+                      </button>
+
+                      <button
+                        id="tab-grid-style"
+                        onClick={() => setActiveTab('grid_style')}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1 shrink-0 ${
+                          activeTab === 'grid_style' 
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm' 
+                            : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        <Grid className="w-3.5 h-3.5" /> Lưới ô ly
+                      </button>
+                    </div>
+
+                    <button
+                      id="reset-ar-calibration"
+                      onClick={handleResetPosition}
+                      className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition shrink-0 ml-1"
+                      title="Đặt lại vị trí căn giữa"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Scrollable Drawer Body with ARControlTabs */}
+                  <div className="overflow-y-auto flex-1 pr-1">
+                    <ARControlTabs 
+                      activeTab={activeTab}
+                      onSwitchTab={setActiveTab}
+                      {...arControlTabsProps}
+                    />
+                  </div>
+
+                  {/* Sticky bottom collapse button inside mobile drawer */}
+                  <div className="pt-2.5 mt-2 border-t border-neutral-800 flex justify-center shrink-0">
+                    <button
+                      id="mobile-drawer-bottom-collapse"
+                      onClick={() => setShowControls(false)}
+                      className="w-full py-2.5 rounded-2xl bg-neutral-800 hover:bg-neutral-700 text-cyan-300 hover:text-white text-xs font-bold flex items-center justify-center gap-2 border border-neutral-700 shadow transition active:scale-95 cursor-pointer"
+                    >
+                      <ChevronDown className="w-4 h-4 text-cyan-400" />
+                      <span>Thu gọn bảng điều khiển</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 6. IN-AR MULTI-LINE TEXT EDITOR & TEMPLATE PICKER MODAL */}
+      {isEditingText && (
+        <div 
+          id="ar-text-editor-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 animate-in fade-in duration-200 pointer-events-auto"
+        >
+          <div className="w-full max-w-lg bg-neutral-900 border border-neutral-700 rounded-3xl p-5 shadow-2xl text-white space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">Soạn thảo văn bản lớp đè AR</h3>
+                  <p className="text-[11px] text-neutral-400">Nhập bài thơ hoặc đoạn văn nhiều dòng để tập viết trên giấy thật</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsEditingText(false)}
+                className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Quick Templates Selector */}
+            <div>
+              <label className="text-[11px] font-semibold text-neutral-300 block mb-1.5">
+                Chọn mẫu văn bản nhanh:
+              </label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {QUICK_TEMPLATES.map((tmpl) => (
+                  <button
+                    key={tmpl.label}
+                    onClick={() => setTempEditText(tmpl.text)}
+                    className="p-2 rounded-xl bg-neutral-800/80 hover:bg-neutral-800 border border-neutral-700/70 hover:border-cyan-500/50 text-left transition group"
+                  >
+                    <div className="text-xs font-semibold text-neutral-200 group-hover:text-cyan-300 truncate">
+                      {tmpl.label}
+                    </div>
+                    <div className="text-[10px] text-neutral-400 truncate mt-0.5 font-mono">
+                      {tmpl.text.split('\n')[0]}...
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Textarea */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold text-neutral-200">
+                  Nội dung bài viết (Hỗ trợ xuống dòng Enter):
+                </label>
+                <span className="text-[11px] font-mono text-cyan-400">
+                  {tempEditText.split('\n').filter(Boolean).length} dòng • {tempEditText.length} ký tự
+                </span>
+              </div>
+              <textarea
+                id="ar-textarea-edit"
+                value={tempEditText}
+                onChange={(e) => setTempEditText(e.target.value)}
+                placeholder="Nhập từng dòng chữ cần luyện viết vào đây...&#10;Dòng 1: Công cha như núi Thái Sơn&#10;Dòng 2: Nghĩa mẹ như nước trong nguồn chảy ra"
+                rows={5}
+                className="w-full bg-neutral-950 border border-neutral-700 rounded-2xl p-3 text-sm text-white placeholder:text-neutral-500 focus:outline-none focus:border-cyan-400 font-sans resize-none"
+              />
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-800">
+              <button
+                onClick={() => {
+                  setTempEditText('');
+                }}
+                className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white text-xs transition"
+              >
+                Xóa trắng
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsEditingText(false)}
+                  className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-medium transition"
+                >
+                  Hủy
+                </button>
+                <button
+                  id="ar-apply-text-modal-btn"
+                  onClick={handleApplyText}
+                  disabled={!tempEditText.trim()}
+                  className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 text-neutral-950 font-bold text-xs shadow-lg shadow-cyan-500/30 transition flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" /> Áp dụng vào AR
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+/* 15 Google Fonts for English Hand-lettering & Calligraphy Tracing */
+.font-great-vibes {
+  font-family: 'Great Vibes', cursive;
+  letter-spacing: 0.03em;
+}
+
+.font-pinyon-script {
+  font-family: 'Pinyon Script', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-alex-brush {
+  font-family: 'Alex Brush', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-indie-flower {
+  font-family: 'Indie Flower', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-shadows-into-light {
+  font-family: 'Shadows Into Light', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-covered-by-your-grace {
+  font-family: 'Covered By Your Grace', cursive;
+  letter-spacing: 0.05em;
+}
+
+.font-sacramento {
+  font-family: 'Sacramento', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-satisfy {
+  font-family: 'Satisfy', cursive;
+  letter-spacing: 0.03em;
+}
+
+.font-permanent-marker {
+  font-family: 'Permanent Marker', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-yellowtail {
+  font-family: 'Yellowtail', cursive;
+  letter-spacing: 0.03em;
+}
+
+.font-amatic-sc {
+  font-family: 'Amatic SC', cursive;
+  letter-spacing: 0.06em;
+}
+
+.font-soft-rounded {
+  font-family: 'Fredoka', sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.font-architectural-caps {
+  font-family: 'Architects Daughter', cursive;
+  letter-spacing: 0.05em;
+}
+
+.font-unifraktur {
+  font-family: 'UnifrakturMaguntia', cursive;
+  letter-spacing: 0.04em;
+}
+
+.font-montez {
+  font-family: 'Montez', cursive;
+  letter-spacing: 0.04em;
+}
+
+/* Base Asian / Vietnamese fonts */
+.font-itim {
+  font-family: 'Itim', cursive;
+  letter-spacing: 0.02em;
+}
+
+.font-klee {
+  font-family: 'Klee One', sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.font-mashan {
+  font-family: 'Ma Shan Zheng', serif;
+  letter-spacing: 0.05em;
+}
+
+/* High-legibility tracing enhancements for camera viewfinder */
+.ar-tracing-text {
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.ar-crisp-outline {
+  -webkit-text-stroke: 0.6px currentColor;
+}
+
+/* Print styles for A4 Worksheets */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  header, nav, footer, .no-print {
+    display: none !important;
+  }
+  .print-page-container {
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    width: 100% !important;
+  }
+  @page {
+    size: A4 portrait;
+    margin: 8mm 10mm;
+  }
+}
+
+.tracing-outline-dotted {
+  -webkit-text-stroke: 1.2px #475569;
+  color: #cbd5e1;
+}
+
+.tracing-faded-gray {
+  color: rgba(51, 65, 85, 0.35);
+}

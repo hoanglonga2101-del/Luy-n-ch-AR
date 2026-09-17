@@ -1,0 +1,7 @@
+{
+  "name": "Luyện chữ AR",
+  "description": "Giải pháp luyện chữ thông minh và thực dụng: In phiếu luyện viết A4 chuẩn ô ly, coi kiểu chữ phóng to & kê giấy đồ nét, AI chấm điểm nét chữ và chế độ hắt hình AR.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
