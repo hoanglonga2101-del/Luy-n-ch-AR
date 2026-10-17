@@ -222,10 +222,7 @@ export default function App() {
   // Full-screen AR Mode View
   if (activeView === 'ar') {
     return (
-      <div 
-        className="w-full h-[100dvh] overflow-hidden bg-black text-white"
-        style={{ height: '100dvh', maxHeight: '100dvh' }}
-      >
+      <div className="w-screen h-screen overflow-hidden bg-black text-white">
         <ARViewfinder
           text={activePracticeItem.text}
           language={activePracticeItem.language}
@@ -250,10 +247,7 @@ export default function App() {
   }
 
   return (
-    <div 
-      className="min-h-[100dvh] bg-neutral-950 text-neutral-100 flex flex-col font-sans"
-      style={{ minHeight: '100dvh' }}
-    >
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans">
       {/* Navigation Header */}
       <Header
         currentLanguage={currentLanguage}

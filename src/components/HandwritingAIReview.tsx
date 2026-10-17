@@ -18,8 +18,18 @@ import {
 } from 'lucide-react';
 import { HandwritingFeedback } from '../types';
 import { saveReviewToHistory, awardExp } from '../utils/gamification';
-import { playFanfareSound } from '../utils/audio';
+import { playFanfareSound, playWarningBeep } from '../utils/audio';
 import { RankInsignia } from './RankInsignia';
+import { 
+  detectInkFromImage, 
+  extractHandwritingStrokes,
+  evaluateAgainstTemplate,
+  evaluateDrawingOnPaper,
+  calculateRealisticCVScore, 
+  MIN_STROKE_LENGTH,
+  NO_STROKES_DETECTED_MESSAGE,
+  NO_INK_WARNING_MESSAGE 
+} from '../utils/inkDetection';
 
 interface HandwritingAIReviewProps {
   sampleText?: string;
@@ -72,6 +82,29 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
     setErrorMsg(null);
     setExpAwarded(0);
 
+    // 1. Tiền kiểm tra phát hiện nét chữ trên mặt phẳng (Pre-validation check)
+    const inkDetection = await detectInkFromImage(selectedImage);
+    if (!inkDetection.hasInk || !inkDetection.canvasElement) {
+      setIsAnalyzing(false);
+      setErrorMsg(NO_STROKES_DETECTED_MESSAGE);
+      playWarningBeep();
+      return;
+    }
+
+    const strokeCheck = extractHandwritingStrokes(inkDetection.canvasElement);
+    if (!strokeCheck.hasStrokes || strokeCheck.totalLength < MIN_STROKE_LENGTH) {
+      setIsAnalyzing(false);
+      setErrorMsg(NO_STROKES_DETECTED_MESSAGE);
+      playWarningBeep();
+      return;
+    }
+
+    // 2. Khi đã xác nhận có chữ thật -> Đối chiếu với chữ mẫu
+    const strokeEval = evaluateAgainstTemplate(
+      inkDetection.canvasElement,
+      targetChar
+    );
+
     let feedbackResult: HandwritingFeedback;
 
     try {
@@ -84,6 +117,7 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
           target_character: targetChar,
           stroke_index: strokeIndex,
           paper_corners: enableCalibration ? paperCorners : undefined,
+          cv_metrics: strokeEval,
         }),
       });
 
@@ -93,66 +127,113 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
         if (data.strictEvaluation) {
           feedbackResult.strictEvaluation = data.strictEvaluation;
         }
+
+        // RÀNG BUỘC KẾT QUẢ ĐỐI CHIẾU:
+        // Nếu phát hiện nét chữ nhưng sai hoàn toàn so với chữ mẫu:
+        // Tổng điểm phải < 40 điểm, thông báo rõ nét viết chưa đúng mẫu chữ yêu cầu.
+        if (strokeEval.finalScore < 40 || strokeEval.status === 'FAIL') {
+          feedbackResult.overallScore = Math.min(35, strokeEval.finalScore);
+          feedbackResult.grade = "Chưa đạt - Nét viết chưa đúng mẫu chữ yêu cầu";
+          feedbackResult.improvements = [
+            strokeEval.warningText || "⚠️ Nét viết chưa đúng mẫu chữ yêu cầu! Bé hãy quan sát nét mẫu màu hồng và viết lại cẩn thận nhé."
+          ];
+          if (feedbackResult.slantAnalysis) feedbackResult.slantAnalysis.score = Math.min(30, strokeEval.trajectoryScore);
+          if (feedbackResult.sizeConsistency) feedbackResult.sizeConsistency.score = Math.min(30, strokeEval.completenessScore);
+          if (feedbackResult.strictEvaluation?.metrics) {
+            feedbackResult.strictEvaluation.metrics.overall_score = feedbackResult.overallScore;
+            feedbackResult.strictEvaluation.metrics.start_end_accuracy = Math.min(30, Math.round(strokeEval.precision * 40));
+          }
+        } else if (strokeEval.finalScore >= 80) {
+          feedbackResult.overallScore = Math.max(feedbackResult.overallScore, strokeEval.finalScore);
+        }
       } else {
         throw new Error(data.error || 'Không thể phân tích ảnh nét chữ.');
       }
     } catch (err: any) {
-      console.error('Error analyzing handwriting:', err);
-      // Fallback kid-friendly expert review adhering to strict schema
+      console.warn('Backend handwriting analysis fallback to CV Engine:', err);
+      if (err.message && (err.message.includes('Chưa phát hiện') || err.message.includes('Không phát hiện'))) {
+        setIsAnalyzing(false);
+        setErrorMsg(NO_STROKES_DETECTED_MESSAGE);
+        playWarningBeep();
+        return;
+      }
+
+      // Calculate realistic score derived strictly from actual 2-way IoU and precision/recall
       const strictFallback = {
         target_character: targetChar,
         stroke_index: strokeIndex,
-        status: "PASS" as const,
+        status: strokeEval.status,
         metrics: {
-          overall_score: 90,
-          trajectory_score: 88,
-          start_end_accuracy: 92,
-          proportion_score: 89,
-          smoothness_score: 91,
+          overall_score: strokeEval.finalScore,
+          trajectory_score: strokeEval.trajectoryScore,
+          start_end_accuracy: Math.max(45, Math.round(100 - strokeEval.penalty * 1.5)),
+          proportion_score: strokeEval.completenessScore,
+          smoothness_score: Math.max(40, Math.round(strokeEval.precision * 95)),
         },
-        detected_errors: [
+        detected_errors: strokeEval.warningText ? [
           {
-            error_type: "LECH_DIEM_DUNG",
+            error_type: "LECH_NET_SAI_MAU" as const,
+            severity: "HIGH" as const,
+            instruction: strokeEval.warningText,
+          }
+        ] : [
+          {
+            error_type: "LECH_DIEM_DUNG" as const,
             severity: "LOW" as const,
             instruction: "Bé chú ý vuốt nhẹ nét kết thúc của chữ cho thanh thoát, dừng đúng đường kẻ ngang số 1 nhé.",
-          },
+          }
         ],
         learning_path_recommendation: {
-          focus_area: "Nét móc ngược & Độ nghiêng tự nhiên",
-          suggested_next_exercise: "Luyện 3 dòng chữ mẫu giữ khoảng cách chuẩn bằng 1 thân chữ 'o'",
+          focus_area: strokeEval.finalScore < 50 ? "Quỹ đạo bám nét mẫu" : "Nét móc ngược & Độ nghiêng tự nhiên",
+          suggested_next_exercise: strokeEval.finalScore < 50
+            ? "Đồ theo nét chữ mẫu màu hồng để quen tay trước khi viết độc lập"
+            : "Luyện 3 dòng chữ mẫu giữ khoảng cách chuẩn bằng 1 thân chữ 'o'",
         },
       };
 
+      let gradeText = "Khá - Nét chữ đều và sáng";
+      if (strokeEval.finalScore >= 88) gradeText = "Xuất sắc - Nét chữ chuẩn nét mẫu ⭐";
+      else if (strokeEval.finalScore >= 75) gradeText = "Khá tốt - Nét chữ thanh thoát, đúng quy tắc";
+      else if (strokeEval.finalScore >= 50) gradeText = "Trung bình - Cần nắn lại tỷ lệ ô ly";
+      else gradeText = "Lệch nét / Viết sai mẫu - Cần rèn luyện lại";
+
       feedbackResult = {
-        overallScore: 90,
-        grade: "Bé viết rất đẹp! Nét chữ tròn trịa và thẳng hàng ⭐",
+        overallScore: strokeEval.finalScore,
+        grade: gradeText,
         slantAnalysis: {
-          score: 88,
+          score: strokeEval.trajectoryScore,
           detectedAngle: "Nghiêng chuẩn 15°",
-          feedback: "Độ nghiêng của các nét sổ thẳng rất đều đặn, chữ đứng thẳng đẹp mắt.",
+          feedback: `Độ bám nét đạt ${Math.round(strokeEval.precision * 100)}% quỹ đạo chuẩn (${strokeEval.inTemplatePixels}/${strokeEval.userInkPixels} pixels).`,
         },
         sizeConsistency: {
-          score: 92,
-          feedback: "Các con chữ o, a, e đều cao đúng 1 ô ly, nét khuyết chạm đúng đường kẻ trên.",
+          score: strokeEval.completenessScore,
+          feedback: `Độ hoàn thiện con chữ đạt ${Math.round(strokeEval.recall * 100)}% diện tích nét mẫu.`,
         },
         spacingAndAlignment: {
-          score: 88,
-          feedback: "Chân các chữ nằm ngay ngắn trên đường kẻ đáy, khoảng cách các chữ rất vừa vặn.",
+          score: Math.max(45, Math.round(100 - strokeEval.penalty * 1.5)),
+          feedback: strokeEval.penalty > 0 
+            ? `Phát hiện ${strokeEval.outOfBoundsPixels} pixels mực lệch ngoài nét mẫu (phạt -${strokeEval.penalty} điểm).`
+            : "Chân các chữ nằm ngay ngắn trên đường kẻ đáy.",
         },
         strokeQuality: {
-          score: 90,
-          feedback: "Nét mực đều, không bị run tay, các nét nối liền mạch và mượt mà.",
+          score: Math.max(40, Math.round(strokeEval.precision * 95)),
+          feedback: `Nét chữ liền mạch, độ chính xác quỹ đạo đạt ${Math.round(strokeEval.precision * 100)}%.`,
         },
-        strengths: [
-          "Bé cầm bút chắc tay, nét viết dứt khoát không bị lem mực.",
-          "Các chữ tròn trịa, cân đối và rất dễ đọc.",
-          "Bài viết sạch sẽ, đúng ô ly của vở tiểu học.",
+        strengths: strokeEval.finalScore >= 70 ? [
+          "Bé cầm bút chắc tay, nét viết rõ ràng bám sát nét mẫu.",
+          "Nét chữ nằm gọn trong khung ô ly tiểu học.",
+        ] : [
+          "Bé đã cố gắng viết bài, mực xuống đều trên trang giấy.",
         ],
-        improvements: [
+        improvements: strokeEval.warningText ? [
+          strokeEval.warningText,
+          "Chú ý nhìn kỹ nét mẫu màu hồng trước khi đặt ngòi bút.",
+        ] : [
           "[LECH_DIEM_DUNG]: Bé chú ý vuốt nhẹ nét kết thúc của chữ cho thanh thoát hơn nhé.",
-          "Giữ khoảng cách giữa các từ bằng khoảng một chữ 'o' là hoàn hảo nhất.",
         ],
-        encouragement: "Bé viết rất cẩn thận và đáng khen! Mỗi ngày bé chỉ cần rèn 1 trang ô ly, nét chữ sẽ luôn là điểm 10!",
+        encouragement: strokeEval.finalScore >= 70
+          ? "Bé viết rất cẩn thận và đáng khen! Mỗi ngày rèn 1 trang ô ly, nét chữ sẽ ngày càng đẹp!"
+          : "Nét chữ hơi chệch ra ngoài mẫu, bé hãy bình tĩnh đồ lại chậm theo đường kẻ màu hồng nhé!",
         strictEvaluation: strictFallback,
       };
     } finally {
@@ -190,7 +271,7 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
   };
 
   return (
-    <div className="w-full min-h-[100dvh] bg-neutral-950 text-neutral-100 flex flex-col items-center py-4 sm:py-6 px-3 sm:px-6" style={{ minHeight: '100dvh' }}>
+    <div className="w-full min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center py-4 sm:py-6 px-3 sm:px-6">
       <div className="w-full max-w-4xl space-y-5 sm:space-y-6">
         {/* Header Intro */}
         <div className="bg-gradient-to-br from-indigo-950/90 via-neutral-900 to-cyan-950/90 border-2 border-indigo-700/50 rounded-3xl p-4 sm:p-6 shadow-xl space-y-2">
@@ -207,6 +288,27 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
             Bé cứ thoải mái viết bài bằng bút mực thật trên vở ô ly hoặc tờ giấy A4. Sau đó chụp ảnh trang viết để <strong>cô AI chấm điểm</strong>, khen ngợi và chỉ bé cách nắn nót từng nét chữ nhé!
           </p>
         </div>
+
+        {/* Yellow Alert Warning for No Ink Detected */}
+        {errorMsg && (
+          <div className="p-4 sm:p-5 rounded-3xl bg-amber-500/20 border-2 border-amber-400 text-amber-200 shadow-xl flex items-start justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="flex items-start gap-3">
+              <span className="text-2xl shrink-0">⚠️</span>
+              <div>
+                <h4 className="font-black text-amber-300 text-sm sm:text-base">Chưa phát hiện nét mực viết tay</h4>
+                <p className="text-xs sm:text-sm text-amber-100 font-medium mt-0.5 leading-relaxed">
+                  {errorMsg}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setErrorMsg(null)}
+              className="px-2.5 py-1 rounded-xl bg-amber-400/25 hover:bg-amber-400/40 text-amber-300 text-xs font-bold transition cursor-pointer"
+            >
+              ✕ Đóng
+            </button>
+          </div>
+        )}
 
         {/* Upload & Snapshot Section */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">

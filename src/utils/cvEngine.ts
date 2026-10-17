@@ -575,18 +575,30 @@ export function evaluateUserStrokeWithTolerance(
   const trajectoryScore = Math.max(0, Math.min(100, Math.round(100 - dtwCost * 180)));
   const startEndScore = Math.max(0, Math.min(100, Math.round(100 - (startDist + endDist) / (gridUnitPx * 2) * 50)));
   const proportionScore = Math.max(0, Math.min(100, Math.round(100 - frechetDist * 90)));
-  const smoothnessScore = Math.max(70, Math.min(98, Math.round(92 - (dtwCost > 0.15 ? 15 : 0))));
+  const smoothnessScore = Math.max(25, Math.min(98, Math.round(92 - dtwCost * 120)));
 
-  const overallScore = Math.round(
-    trajectoryScore * 0.4 +
-    startEndScore * 0.25 +
+  let overallScore = Math.round(
+    trajectoryScore * 0.45 +
+    startEndScore * 0.20 +
     proportionScore * 0.25 +
-    smoothnessScore * 0.1
+    smoothnessScore * 0.10
   );
 
+  // ANTI-INVERSION GUARDS:
+  // Nếu nét viết ngược hướng hoặc DTW quá lớn (vẽ nét khác / sai mẫu hoàn toàn),
+  // Điểm BẮT BUỘC bị giới hạn dưới 40 điểm!
+  if (cosAngle < -0.2) {
+    overallScore = Math.min(overallScore, 35);
+  }
+  if (dtwCost > 0.35) {
+    overallScore = Math.min(overallScore, 38);
+  }
+  if (dtwCost > 0.50) {
+    overallScore = Math.min(overallScore, 20);
+  }
+
   // Xác định xem có chấp nhận phong cách cá nhân không:
-  // Nếu không có lỗi hướng nét nghiêm trọng và điểm quỹ đạo >= 78% -> Chấp nhận phong cách tự nhiên
-  const hasCriticalTechnicalError = detectedErrors.some(e => e.severity === 'HIGH');
+  const hasCriticalTechnicalError = detectedErrors.some(e => e.severity === 'HIGH') || cosAngle < -0.2 || dtwCost > 0.35;
   const isPersonalStyleAccepted = !hasCriticalTechnicalError && overallScore >= 75;
 
   let status: 'PASS' | 'NEEDS_IMPROVEMENT' | 'FAIL' = 'PASS';
@@ -847,3 +859,14 @@ export class ValidationMatrixLogger {
     this.saveToStorage();
   }
 }
+
+// Unified Stroke Evaluation exports
+export { 
+  evaluateDrawingOnPaper, 
+  computeStrokeScore, 
+  evaluateHandwriting, 
+  detectInkFromVideo,
+  detectInkFromImage,
+  analyzeImageDataForInk
+} from './inkDetection';
+

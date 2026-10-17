@@ -217,3 +217,32 @@ export function speakText(text: string, lang: 'vi' | 'en' | 'ja' | 'zh') {
     console.warn('Speech synthesis error:', err);
   }
 }
+
+/**
+ * Âm thanh bíp cảnh báo nhẹ (Web Audio API) khi chưa phát hiện nét chữ trên mặt phẳng
+ */
+export function playWarningBeep() {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    // Gentle dual-tone warning chime: 420Hz down to 330Hz
+    osc.frequency.setValueAtTime(420, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(330, ctx.currentTime + 0.16);
+
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+    osc.stop(ctx.currentTime + 0.20);
+  } catch {
+    // ignore
+  }
+}

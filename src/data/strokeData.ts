@@ -34,56 +34,6 @@ export const CHARACTER_STROKE_DATA: Record<string, StrokePath[]> = {
     { id: 2, d: 'M 62 18 L 62 76 C 62 82 68 83 74 80', label: 'Nét 2: Nét móc ngược', startPoint: { x: 62, y: 18 }, direction: 'vertical' },
     { id: 3, d: 'M 50 28 L 74 28', label: 'Nét 3: Nét gạch ngang ngắn', startPoint: { x: 50, y: 28 }, direction: 'horizontal' }
   ],
-  'ă': [
-    { id: 1, d: 'M 65 48 C 60 35 35 35 35 55 C 35 75 65 75 65 55 Z', label: 'Nét 1: Nét cong kín', startPoint: { x: 65, y: 38 }, direction: 'curve' },
-    { id: 2, d: 'M 65 38 L 65 75 C 65 80 72 82 78 80', label: 'Nét 2: Nét móc ngược phải', startPoint: { x: 65, y: 38 }, direction: 'vertical' },
-    { id: 3, d: 'M 42 24 C 48 30 52 30 58 24', label: 'Nét 3: Dấu mũ cong ngửa', startPoint: { x: 42, y: 24 }, direction: 'curve' }
-  ],
-  'â': [
-    { id: 1, d: 'M 65 48 C 60 35 35 35 35 55 C 35 75 65 75 65 55 Z', label: 'Nét 1: Nét cong kín', startPoint: { x: 65, y: 38 }, direction: 'curve' },
-    { id: 2, d: 'M 65 38 L 65 75 C 65 80 72 82 78 80', label: 'Nét 2: Nét móc ngược phải', startPoint: { x: 65, y: 38 }, direction: 'vertical' },
-    { id: 3, d: 'M 42 28 L 50 20 L 58 28', label: 'Nét 3: Dấu mũ nón úp', startPoint: { x: 42, y: 28 }, direction: 'slanted_left' }
-  ],
-  'e': [
-    { id: 1, d: 'M 35 58 L 68 54 C 68 36 38 34 34 52 C 30 72 60 78 72 70', label: 'Nét 1: Nét cong hở phải liền nét lượn ngang', startPoint: { x: 35, y: 58 }, direction: 'curve' }
-  ],
-  'ê': [
-    { id: 1, d: 'M 35 58 L 68 54 C 68 36 38 34 34 52 C 30 72 60 78 72 70', label: 'Nét 1: Thân chữ e', startPoint: { x: 35, y: 58 }, direction: 'curve' },
-    { id: 2, d: 'M 44 26 L 50 20 L 56 26', label: 'Nét 2: Dấu mũ nón úp', startPoint: { x: 44, y: 26 }, direction: 'slanted_left' }
-  ],
-  'l': [
-    { id: 1, d: 'M 45 76 L 45 28 C 45 15 56 15 56 26 L 56 75 C 56 80 62 82 68 80', label: 'Nét 1: Nét khuyết trên nối liền móc ngược', startPoint: { x: 45, y: 76 }, direction: 'vertical' }
-  ],
-  'm': [
-    { id: 1, d: 'M 28 45 L 28 78', label: 'Nét 1: Nét móc xuôi trái', startPoint: { x: 28, y: 45 }, direction: 'vertical' },
-    { id: 2, d: 'M 28 55 C 32 40 48 40 48 78', label: 'Nét 2: Nét móc xuôi rộng', startPoint: { x: 28, y: 55 }, direction: 'vertical' },
-    { id: 3, d: 'M 48 55 C 52 40 70 40 70 75 C 70 80 76 82 80 80', label: 'Nét 3: Nét móc hai đầu có móc hất', startPoint: { x: 48, y: 55 }, direction: 'hook' }
-  ],
-  'n': [
-    { id: 1, d: 'M 35 45 L 35 78', label: 'Nét 1: Nét móc xuôi trái', startPoint: { x: 35, y: 45 }, direction: 'vertical' },
-    { id: 2, d: 'M 35 55 C 42 40 68 40 68 75 C 68 80 74 82 78 80', label: 'Nét 2: Nét móc hai đầu', startPoint: { x: 35, y: 55 }, direction: 'hook' }
-  ],
-  'o': [
-    { id: 1, d: 'M 50 32 C 68 32 72 48 72 60 C 72 72 68 84 50 84 C 32 84 28 72 28 60 C 28 48 32 32 50 32 Z', label: 'Nét 1: Nét cong kín tròn đều', startPoint: { x: 50, y: 32 }, direction: 'curve' }
-  ],
-  'ô': [
-    { id: 1, d: 'M 50 36 C 68 36 72 50 72 62 C 72 74 68 84 50 84 C 32 84 28 74 28 62 C 28 50 32 36 50 36 Z', label: 'Nét 1: Nét cong kín', startPoint: { x: 50, y: 36 }, direction: 'curve' },
-    { id: 2, d: 'M 44 26 L 50 20 L 56 26', label: 'Nét 2: Dấu mũ nón úp', startPoint: { x: 44, y: 26 }, direction: 'slanted_left' }
-  ],
-  'ơ': [
-    { id: 1, d: 'M 50 36 C 68 36 72 50 72 62 C 72 74 68 84 50 84 C 32 84 28 74 28 62 C 28 50 32 36 50 36 Z', label: 'Nét 1: Nét cong kín', startPoint: { x: 50, y: 36 }, direction: 'curve' },
-    { id: 2, d: 'M 68 36 C 72 32 76 34 74 40', label: 'Nét 2: Nét râu móc nhỏ bên phải', startPoint: { x: 68, y: 36 }, direction: 'curve' }
-  ],
-  'u': [
-    { id: 1, d: 'M 30 50 L 38 42', label: 'Nét 1: Nét hất xiên ngắn', startPoint: { x: 30, y: 50 }, direction: 'slanted_right' },
-    { id: 2, d: 'M 38 42 L 38 72 C 38 80 56 80 56 72 L 56 42', label: 'Nét 2: Nét móc ngược rộng', startPoint: { x: 38, y: 42 }, direction: 'vertical' },
-    { id: 3, d: 'M 56 42 L 56 75 C 56 80 62 82 66 80', label: 'Nét 3: Nét móc ngược phải', startPoint: { x: 56, y: 42 }, direction: 'vertical' }
-  ],
-  'ư': [
-    { id: 1, d: 'M 38 42 L 38 72 C 38 80 56 80 56 72 L 56 42', label: 'Nét 1: Thân móc ngược', startPoint: { x: 38, y: 42 }, direction: 'vertical' },
-    { id: 2, d: 'M 56 42 L 56 75 C 56 80 62 82 66 80', label: 'Nét 2: Nét móc ngược phải', startPoint: { x: 56, y: 42 }, direction: 'vertical' },
-    { id: 3, d: 'M 56 42 C 60 38 64 40 62 46', label: 'Nét 3: Nét râu móc nhỏ', startPoint: { x: 56, y: 42 }, direction: 'curve' }
-  ],
 
   // Chinese Basic Strokes (Vĩnh Tự Bát Pháp)
   '一': [

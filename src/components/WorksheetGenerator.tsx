@@ -131,7 +131,7 @@ export const WorksheetGenerator: React.FC<WorksheetGeneratorProps> = ({
   };
 
   return (
-    <div className="w-full min-h-[100dvh] bg-neutral-950 text-neutral-100 flex flex-col items-center py-4 sm:py-6 px-2.5 sm:px-6" style={{ minHeight: '100dvh' }}>
+    <div className="w-full min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center py-4 sm:py-6 px-2.5 sm:px-6">
       {/* Control Panel (Hidden during print) */}
       <div className="no-print w-full max-w-5xl mb-6 space-y-4 sm:space-y-5">
         {/* Kid-friendly Cheerful Banner */}
