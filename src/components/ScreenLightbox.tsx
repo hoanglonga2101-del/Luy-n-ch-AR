@@ -83,9 +83,10 @@ export const ScreenLightbox: React.FC<ScreenLightboxProps> = ({
 
   return (
     <div 
-      className={`w-screen h-screen overflow-hidden flex flex-col select-none transition-colors duration-300 ${
+      className={`w-full h-[100dvh] overflow-hidden flex flex-col select-none transition-colors duration-300 ${
         themeMode === 'light' ? 'bg-white text-neutral-900' : 'bg-neutral-950 text-white'
       }`}
+      style={{ height: '100dvh', maxHeight: '100dvh' }}
     >
       {/* Top Floating Control Bar (Hidden when locked) */}
       {!isLocked && (

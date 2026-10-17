@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Camera, 
   RotateCw, 
+  RotateCcw,
   Lock, 
   Unlock, 
   Sliders, 
@@ -73,6 +74,25 @@ import {
   DeviationFeedback, 
   DeviationStatus 
 } from '../utils/realtimeDeviationDetector';
+import {
+  startCamera as startCameraManager,
+  stopCurrentStream,
+  parseCameraError,
+  openAppInNewTab,
+} from '../utils/cameraManager';
+import { HandwritingAssessmentModal } from './HandwritingAssessmentModal';
+import { 
+  evaluatePostWritingSession, 
+  PostWritingAssessmentResult 
+} from '../utils/handwritingEvaluator';
+import { 
+  RealtimeStrokeOrderTracker, 
+  detectBlankPaper, 
+  evaluateComprehensiveWriting, 
+  playAssessmentAudio,
+  ComprehensiveAssessmentScore
+} from '../utils/opticalStrokeOrderTracker';
+import { awardExp } from '../utils/gamification';
 
 export const NEON_COLOR_PRESETS = [
   { id: 'neon_pink', label: 'Đỏ Neon', hex: '#FF0055', desc: 'Rực rỡ trên nền giấy trắng' },
@@ -196,6 +216,9 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isAutoplayBlocked, setIsAutoplayBlocked] = useState<boolean>(false);
+  const [isRequestingPermission, setIsRequestingPermission] = useState<boolean>(false);
+  const [isIframeBlocked, setIsIframeBlocked] = useState<boolean>(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [isSimulatedPaper, setIsSimulatedPaper] = useState<boolean>(false);
 
@@ -316,6 +339,113 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
   const [stepDuration, setStepDuration] = useState<number>(1200); // ms per stroke step
   const [showFutureOutline, setShowFutureOutline] = useState<boolean>(true);
 
+  // 9. Post-Writing Assessment & Completion Grading State
+  const [assessmentResult, setAssessmentResult] = useState<ComprehensiveAssessmentScore | PostWritingAssessmentResult | null>(null);
+  const [isAssessmentModalOpen, setIsAssessmentModalOpen] = useState<boolean>(false);
+  const [isEvaluating, setIsEvaluating] = useState<boolean>(false);
+  const [blankWarningNotice, setBlankWarningNotice] = useState<string | null>(null);
+
+  // Real-time Optical Stroke Order Tracker (chạy liên tục qua camera)
+  const strokeOrderTrackerRef = useRef(new RealtimeStrokeOrderTracker(activeChar));
+
+  // Đồng bộ ký tự đang luyện tập với bộ theo dõi thứ tự nét
+  useEffect(() => {
+    if (strokeOrderTrackerRef.current) {
+      strokeOrderTrackerRef.current.setCharacter(activeChar);
+    }
+  }, [activeChar]);
+
+  // Xử lý khi người dùng bấm nút: "📸 Đã viết xong - Chấm điểm" (#btn-capture-grade / #btn-finish-check)
+  const handleFinishAndCheck = () => {
+    setIsEvaluating(true);
+    setBlankWarningNotice(null);
+
+    try {
+      // 1. KIỂM TRA PHÁT HIỆN TRANG GIẤY TRẮNG (BLANK DETECTION)
+      // Nếu mật độ mực trên giấy < 1%, lập tức hủy chấm điểm và hiện cảnh báo màu vàng
+      const blankCheck = detectBlankPaper(videoRef.current);
+      if (blankCheck.isBlank && !isSimulatedPaper) {
+        setBlankWarningNotice(blankCheck.message);
+        playStrokeSound(0.9);
+        setTimeout(() => setBlankWarningNotice(null), 5000);
+        setIsEvaluating(false);
+        return;
+      }
+
+      // 2. Chụp ảnh snapshot minh chứng từ camera
+      let snapshotUrl = '';
+      if (videoRef.current) {
+        const off = document.createElement('canvas');
+        off.width = 640;
+        off.height = Math.round((640 * (videoRef.current.videoHeight || 480)) / (videoRef.current.videoWidth || 640));
+        const ctx = off.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(videoRef.current, 0, 0, off.width, off.height);
+          snapshotUrl = off.toDataURL('image/jpeg', 0.85);
+        }
+      }
+
+      // 3. ĐỐI CHIẾU & CHẤM ĐIỂM TỔNG HỢP (HÌNH DÁNG + THỨ TỰ NÉT)
+      const result = evaluateComprehensiveWriting({
+        character: activeChar,
+        sourceElement: videoRef.current,
+        strokeOrderTracker: strokeOrderTrackerRef.current,
+        userPoints: livePenPoint ? [livePenPoint] : [],
+        snapshotUrl,
+      });
+
+      setAssessmentResult(result);
+      setIsAssessmentModalOpen(true);
+
+      // 4. PHÁT ÂM THANH THEO KẾT QUẢ ĐÁNH GIÁ (Web Audio API synth)
+      playAssessmentAudio(result.isPass);
+
+      // 5. Thưởng EXP nếu làm bài tốt
+      if (result.isPass) {
+        awardExp(15, `Xuất sắc! Viết đúng thứ tự nét chữ '${activeChar}' đạt ${result.overall_score} điểm`);
+      } else if (result.overall_score >= 60) {
+        awardExp(8, `Hoàn thành bài luyện chữ '${activeChar}'`);
+      } else {
+        awardExp(3, `Nỗ lực rèn chữ '${activeChar}'`);
+      }
+    } catch (err) {
+      console.error('Lỗi khi chấm điểm bài viết:', err);
+    } finally {
+      setIsEvaluating(false);
+    }
+  };
+
+  // Nút phụ: "🔄 Viết lại nét này"
+  const handleRetryCurrentLetter = () => {
+    setIsAssessmentModalOpen(false);
+    setCurrentStep(1);
+    setAssessmentResult(null);
+    setBlankWarningNotice(null);
+    strokeOrderTrackerRef.current.reset();
+    playStrokeSound(1.1);
+  };
+
+  // Nút chuyển sang bài tiếp theo từ Modal
+  const handleNextLetter = () => {
+    setIsAssessmentModalOpen(false);
+    setAssessmentResult(null);
+    setBlankWarningNotice(null);
+    setCurrentStep(1);
+    strokeOrderTrackerRef.current.reset();
+
+    const VIETNAMESE_ALPHABET = ['a', 'ă', 'â', 'b', 'c', 'd', 'đ', 'e', 'ê', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'ô', 'ơ', 'p', 'q', 'r', 's', 't', 'u', 'ư', 'v', 'x', 'y'];
+    const cur = activeChar.toLowerCase();
+    const idx = VIETNAMESE_ALPHABET.indexOf(cur);
+    if (idx !== -1 && idx < VIETNAMESE_ALPHABET.length - 1) {
+      setCurrentText(VIETNAMESE_ALPHABET[idx + 1]);
+    } else if (idx === VIETNAMESE_ALPHABET.length - 1) {
+      setCurrentText(VIETNAMESE_ALPHABET[0]);
+    } else {
+      setCurrentText('Công cha như núi Thái Sơn');
+    }
+    playStrokeSound(1.3);
+  };
+
   // Universal Controls open/collapsed state
   const isControlsOpen = deviceMode === 'desktop'
     ? (desktopLeftOpen || desktopRightOpen)
@@ -331,91 +461,111 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
     }
   };
 
-  // Initialize camera stream with mobile-optimized resolution and framerate to eliminate lag
-  useEffect(() => {
-    let currentStream: MediaStream | null = null;
+  // User gesture button click to grant camera or bypass iOS Safari autoplay restrictions
+  const handleUserGrantCamera = async () => {
+    setIsRequestingPermission(true);
+    setCameraError(null);
+    setIsAutoplayBlocked(false);
+    setIsSimulatedPaper(false);
 
-    async function startCamera() {
-      setCameraError(null);
-      setIsTorchOn(false);
-      try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('Trình duyệt không hỗ trợ API camera.');
-        }
+    try {
+      if (!videoRef.current) {
+        throw new Error('Thẻ video chưa sẵn sàng trong DOM.');
+      }
 
-        const isMobileDevice = typeof window !== 'undefined' && (window.innerWidth < 768 || 'ontouchstart' in window);
-        const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
+      const res = await startCameraManager(videoRef.current, { facingMode });
+      if (res.success && res.stream) {
+        setStream(res.stream);
+        setIsAutoplayBlocked(res.isAutoplayBlocked);
+        setIsIframeBlocked(false);
+        setCameraError(null);
 
-        // Mobile performance optimization: match native camera orientation (720x1280 in portrait or 1280x720 in landscape)
-        // to prevent phone GPU/CPU thermal throttling and frame dropping
-        const constraints: MediaStreamConstraints = {
-          video: {
-            facingMode: { ideal: facingMode },
-            width: { ideal: isMobileDevice ? (isPortrait ? 720 : 1280) : 1920 },
-            height: { ideal: isMobileDevice ? (isPortrait ? 1280 : 720) : 1080 },
-            frameRate: { ideal: 30, max: 30 }
-          },
-          audio: false
-        };
-
-        let mediaStream: MediaStream;
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-        } catch (firstErr) {
-          console.warn('Optimized camera constraint failed, retrying with basic constraint:', firstErr);
-          mediaStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: facingMode } },
-            audio: false
-          });
-        }
-
-        currentStream = mediaStream;
-        setStream(mediaStream);
-        setIsSimulatedPaper(false);
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
-        }
-
-        // Check if device video track supports Torch & Hardware Zoom
-        const videoTrack = mediaStream.getVideoTracks()[0];
-        if (videoTrack) {
-          if (typeof videoTrack.getCapabilities === 'function') {
-            const capabilities = videoTrack.getCapabilities() as any;
-            setTorchAvailable(Boolean(capabilities?.torch));
-            if (capabilities?.zoom) {
-              setIsHardwareZoomSupported(true);
-              setZoomCapabilities({
-                min: capabilities.zoom.min || 1,
-                max: capabilities.zoom.max || 5,
-                step: capabilities.zoom.step || 0.1,
-              });
-            } else {
-              setIsHardwareZoomSupported(false);
-              setZoomCapabilities(null);
-            }
-          } else {
-            setTorchAvailable(false);
-            setIsHardwareZoomSupported(false);
+        // Check torch & zoom capabilities
+        const videoTrack = res.stream.getVideoTracks()[0];
+        if (videoTrack && typeof videoTrack.getCapabilities === 'function') {
+          const capabilities = videoTrack.getCapabilities() as any;
+          setTorchAvailable(Boolean(capabilities?.torch));
+          if (capabilities?.zoom) {
+            setIsHardwareZoomSupported(true);
+            setZoomCapabilities({
+              min: capabilities.zoom.min || 1,
+              max: capabilities.zoom.max || 5,
+              step: capabilities.zoom.step || 0.1,
+            });
           }
         }
-      } catch (err: any) {
-        console.warn('Camera error:', err);
-        setCameraError(err?.message || 'Không thể mở camera sau. Vui lòng cho phép quyền truy cập camera.');
-        setIsSimulatedPaper(true);
+      } else if (res.error) {
+        setCameraError(res.error.userGuide);
+        setIsIframeBlocked(res.error.isIframeBlocked);
+        setIsAutoplayBlocked(false);
+      }
+    } catch (err: any) {
+      const parsed = parseCameraError(err);
+      setCameraError(parsed.userGuide);
+      setIsIframeBlocked(parsed.isIframeBlocked);
+    } finally {
+      setIsRequestingPermission(false);
+    }
+  };
+
+  // Initialize camera stream on mount or facingMode change
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function launchCamera() {
+      if (isSimulatedPaper) return;
+      if (!videoRef.current) return;
+
+      setCameraError(null);
+      setIsTorchOn(false);
+      setIsAutoplayBlocked(false);
+
+      const res = await startCameraManager(videoRef.current, { facingMode });
+      if (isCancelled) {
+        if (res.stream) stopCurrentStream(res.stream);
+        return;
+      }
+
+      if (res.success && res.stream) {
+        setStream(res.stream);
+        setIsAutoplayBlocked(res.isAutoplayBlocked);
+        setIsIframeBlocked(false);
+
+        // Check torch & zoom capabilities
+        const videoTrack = res.stream.getVideoTracks()[0];
+        if (videoTrack && typeof videoTrack.getCapabilities === 'function') {
+          const capabilities = videoTrack.getCapabilities() as any;
+          setTorchAvailable(Boolean(capabilities?.torch));
+          if (capabilities?.zoom) {
+            setIsHardwareZoomSupported(true);
+            setZoomCapabilities({
+              min: capabilities.zoom.min || 1,
+              max: capabilities.zoom.max || 5,
+              step: capabilities.zoom.step || 0.1,
+            });
+          } else {
+            setIsHardwareZoomSupported(false);
+            setZoomCapabilities(null);
+          }
+        }
+      } else if (res.error) {
+        console.warn('Camera error during initial start:', res.error);
+        setCameraError(res.error.userGuide);
+        setIsIframeBlocked(res.error.isIframeBlocked);
+        // Nếu bị chặn quyền trong iframe, kích hoạt giấy mô phỏng để người học vẫn xem trước bài luyện
+        if (res.error.isIframeBlocked) {
+          setIsSimulatedPaper(true);
+        }
       }
     }
 
-    if (!isSimulatedPaper) {
-      startCamera();
-    }
+    launchCamera();
 
     return () => {
-      if (currentStream) {
-        currentStream.getTracks().forEach((track) => track.stop());
-      }
+      isCancelled = true;
+      stopCurrentStream();
     };
-  }, [facingMode, isSimulatedPaper]);
+  }, [facingMode]);
 
   // Real-time Optical Camera Pen-Tip Tracking Loop (Frame-by-Frame CV)
   useEffect(() => {
@@ -472,6 +622,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
             if (!isUserTouchingRef.current) {
               const pt = { x: Math.round(smoothed.x), y: Math.round(smoothed.y) };
               setLivePenPoint(pt);
+              strokeOrderTrackerRef.current.updatePoint(pt); // Theo dõi thứ tự nét thời gian thực
               const fb = deviationDetectorRef.current.processFrame(pt, false);
               setRealtimeFeedback({ ...fb });
             }
@@ -913,44 +1064,132 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
 
   return (
     <div 
-      className="relative w-full h-full min-h-[580px] bg-black overflow-hidden flex flex-col select-none touch-none"
+      className="relative w-full h-[100dvh] bg-black overflow-hidden flex flex-col select-none touch-none"
+      style={{ height: '100dvh', maxHeight: '100dvh' }}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
     >
-      {/* 1. CAMERA FEED (Full Screen Background) or Realistic Paper Fallback */}
-      {!isSimulatedPaper ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none origin-center"
-          style={{
-            transform: !isHardwareZoomActive && zoomLevel > 1 ? `scale(${zoomLevel})` : undefined,
-            willChange: 'transform',
-          }}
-        />
-      ) : (
+      {/* iOS Safari / WebRTC Camera Permission & Autoplay Unlock Prompt */}
+      {(isAutoplayBlocked || cameraError) && !isSimulatedPaper && (
         <div 
-          className="absolute inset-0 w-full h-full bg-[#f2ede4] z-0 flex items-center justify-center p-6 transition-transform duration-100 ease-out origin-center"
+          id="ios-camera-permission-modal"
+          className="absolute inset-0 z-[9999] flex flex-col items-center justify-center p-6 bg-black/85 backdrop-blur-md pointer-events-auto"
+          style={{ zIndex: 9999 }}
+        >
+          <div className="w-full max-w-sm bg-neutral-900 border border-cyan-500/50 rounded-3xl p-6 sm:p-8 text-center shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in-95 duration-200 pointer-events-auto">
+            <div className="w-16 h-16 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-300 shadow-lg shadow-cyan-950">
+              <Camera className="w-8 h-8 text-cyan-400 animate-pulse" />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-bold text-white">
+                {isAutoplayBlocked ? 'Chạm để kích hoạt Camera' : 'Cấp quyền truy cập Camera'}
+              </h3>
+              <p className="text-xs text-neutral-300 leading-relaxed">
+                {isAutoplayBlocked 
+                  ? 'Trình duyệt iOS Safari yêu cầu bạn chạm vào màn hình để bắt đầu luồng phát video camera.'
+                  : cameraError || 'Vui lòng chạm nút bên dưới để cấp quyền mở camera sau và chiếu nét chữ lên giấy thật.'}
+              </p>
+            </div>
+
+            {/* Large Touch Target Button - Min 56px height for effortless iOS Safari touch */}
+            <button
+              id="ios-grant-camera-btn"
+              type="button"
+              onClick={handleUserGrantCamera}
+              disabled={isRequestingPermission}
+              className="w-full min-h-[56px] px-6 py-3.5 rounded-2xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 active:scale-95 text-white font-bold text-sm sm:text-base shadow-xl shadow-cyan-950/80 border border-cyan-300/40 flex items-center justify-center gap-2.5 transition cursor-pointer pointer-events-auto relative z-[9999]"
+              style={{ zIndex: 9999 }}
+            >
+              <Camera className="w-5 h-5 text-white" />
+              <span>
+                {isRequestingPermission 
+                  ? 'Đang kết nối camera...' 
+                  : isAutoplayBlocked 
+                    ? 'Chạm để kích hoạt Camera' 
+                    : 'Chạm để cấp quyền mở Camera'}
+              </span>
+            </button>
+
+            {/* Nút mở tab mới nếu phát hiện bị chặn sandbox trong iframe */}
+            {isIframeBlocked && (
+              <button
+                type="button"
+                onClick={openAppInNewTab}
+                className="w-full py-2.5 px-4 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/40 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer pointer-events-auto"
+              >
+                <Maximize2 className="w-4 h-4" />
+                <span>Mở tab mới (Toàn màn hình)</span>
+              </button>
+            )}
+
+            <div className="flex items-center justify-between w-full pt-2 border-t border-neutral-800 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSimulatedPaper(true);
+                  setIsAutoplayBlocked(false);
+                  setCameraError(null);
+                }}
+                className="text-neutral-400 hover:text-white underline text-[11px] cursor-pointer pointer-events-auto"
+              >
+                Dùng mặt giấy mô phỏng
+              </button>
+
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="text-neutral-400 hover:text-white underline text-[11px] cursor-pointer pointer-events-auto"
+              >
+                Quay lại menu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 1. CAMERA FEED (Full Screen Background) - Luôn duy trì trong DOM để videoRef không bao giờ null */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className={`absolute inset-0 w-full h-full object-cover z-0 pointer-events-none origin-center ${
+          isSimulatedPaper ? 'hidden' : 'block'
+        }`}
+        style={{
+          transform: !isHardwareZoomActive && zoomLevel > 1 ? `scale(${zoomLevel})` : undefined,
+          willChange: 'transform',
+        }}
+      />
+
+      {/* Realistic Paper Fallback khi người dùng chọn xem trước trên giấy ảo */}
+      {isSimulatedPaper && (
+        <div 
+          className="absolute inset-0 w-full h-full bg-[#f2ede4] z-0 flex items-center justify-center p-6 transition-transform duration-100 ease-out origin-center pointer-events-none"
           style={{
             transform: zoomLevel > 1 ? `scale(${zoomLevel})` : undefined,
           }}
         >
-          <div className="w-full max-w-2xl h-[85%] bg-white shadow-2xl rounded-2xl border border-neutral-300 p-8 relative overflow-hidden flex flex-col justify-between">
+          <div className="w-full max-w-2xl h-[85%] bg-white shadow-2xl rounded-2xl border border-neutral-300 p-8 relative overflow-hidden flex flex-col justify-between pointer-events-auto">
             <div className="absolute inset-0 opacity-20 pointer-events-none bg-[radial-gradient(#64748b_1px,transparent_1px)] [background-size:20px_20px]" />
-            <div className="text-xs text-neutral-500 font-mono flex items-center justify-between border-b pb-2">
+            <div className="text-xs text-neutral-500 font-mono flex items-center justify-between border-b pb-2 pointer-events-none">
               <span className="font-semibold">MÔ PHỎNG GIẤY TRẮNG TRÊN BÀN</span>
               <span className="text-amber-600 font-medium">Chế độ xem trước (Camera chưa kết nối)</span>
             </div>
             <div className="flex-1 flex flex-col items-center justify-center text-neutral-400 text-sm font-medium gap-2">
-              <p>Đặt điện thoại trên cốc/giá đỡ và bật camera sau để nhìn thấy giấy thật qua màn hình.</p>
+              <p className="pointer-events-none text-center">Đặt điện thoại trên cốc/giá đỡ và bật camera sau để nhìn thấy giấy thật qua màn hình.</p>
               <button
-                onClick={() => setIsSimulatedPaper(false)}
-                className="mt-2 px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs shadow transition flex items-center gap-1.5"
+                type="button"
+                onClick={() => {
+                  setIsSimulatedPaper(false);
+                  handleUserGrantCamera();
+                }}
+                className="mt-2 min-h-[52px] px-6 py-3 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 active:scale-95 text-white font-bold text-xs shadow-xl shadow-cyan-950/60 border border-cyan-400/40 flex items-center gap-2 cursor-pointer pointer-events-auto relative z-[9999]"
+                style={{ zIndex: 9999 }}
               >
-                <Camera className="w-4 h-4" /> Bật lại Camera sau
+                <Camera className="w-4 h-4 text-white" /> Bật lại Camera sau
               </button>
             </div>
           </div>
@@ -961,52 +1200,55 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
       <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center">
         {showPlaneCalibration && (
           <div className="absolute inset-6 sm:inset-10 border border-cyan-400/30 rounded-2xl pointer-events-none flex flex-col justify-between p-2">
-            <div className="flex items-center justify-between">
-              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono">
+            <div className="flex items-center justify-between pointer-events-none">
+              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono pointer-events-none">
                 Góc 1: (0.00, 0.00)
               </span>
-              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono">
+              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono pointer-events-none">
                 Góc 2: (1.00, 0.00)
               </span>
             </div>
 
-            <div className="flex items-center justify-center">
-              <span className="bg-neutral-950/85 backdrop-blur-md border border-cyan-500/40 text-cyan-200 px-3 py-1 rounded-full text-[10px] sm:text-xs font-bold shadow-lg flex items-center gap-1.5 pointer-events-auto">
+            <div className="flex items-center justify-center pointer-events-none">
+              <span className="bg-neutral-950/85 backdrop-blur-md border border-cyan-500/40 text-cyan-200 px-3 py-1 rounded-full text-[10px] sm:text-xs font-bold shadow-lg flex items-center gap-1.5 pointer-events-none">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                 <span>Paper Plane: Khóa mặt phẳng ô ly & Chống rung [0, 1]</span>
               </span>
             </div>
 
-            <div className="flex items-center justify-between">
-              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono">
+            <div className="flex items-center justify-between pointer-events-none">
+              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono pointer-events-none">
                 Góc 4: (0.00, 1.00)
               </span>
-              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono">
+              <span className="bg-neutral-950/80 border border-cyan-400/50 text-cyan-300 px-2 py-0.5 rounded text-[10px] font-mono pointer-events-none">
                 Góc 3: (1.00, 1.00)
               </span>
             </div>
           </div>
         )}
 
-        <div className="absolute top-5 left-5 w-8 h-8 border-t-2 border-l-2 border-cyan-400/70 rounded-tl-lg" />
-        <div className="absolute top-5 right-5 w-8 h-8 border-t-2 border-r-2 border-cyan-400/70 rounded-tr-lg" />
-        <div className="absolute bottom-5 left-5 w-8 h-8 border-b-2 border-l-2 border-cyan-400/70 rounded-bl-lg" />
-        <div className="absolute bottom-5 right-5 w-8 h-8 border-b-2 border-r-2 border-cyan-400/70 rounded-br-lg" />
+        <div className="absolute top-5 left-5 w-8 h-8 border-t-2 border-l-2 border-cyan-400/70 rounded-tl-lg pointer-events-none" />
+        <div className="absolute top-5 right-5 w-8 h-8 border-t-2 border-r-2 border-cyan-400/70 rounded-tr-lg pointer-events-none" />
+        <div className="absolute bottom-5 left-5 w-8 h-8 border-b-2 border-l-2 border-cyan-400/70 rounded-bl-lg pointer-events-none" />
+        <div className="absolute bottom-5 right-5 w-8 h-8 border-b-2 border-r-2 border-cyan-400/70 rounded-br-lg pointer-events-none" />
       </div>
 
-      {/* 2. AR OVERLAY LAYER (Transparent Vector SVG + Real-paper Grids) */}
+      {/* 2. AR OVERLAY LAYER (Transparent Vector SVG + Real-paper Grids) - Container is pointer-events-none to prevent blocking iOS taps */}
       <div 
         id="ar-projection-layer"
-        className={`absolute inset-0 z-20 flex items-center justify-center ${isScreenLocked ? 'cursor-default pointer-events-none' : 'cursor-grab active:cursor-grabbing'}`}
-        onPointerDown={handlePointerDown}
+        className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
       >
         <div
+          id="ar-draggable-box"
           style={{
             transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg)`,
             opacity: opacity,
             transition: isDragging ? 'none' : 'transform 0.05s ease-out',
           }}
-          className="relative max-w-[94vw] max-h-[85vh] p-4 flex flex-col items-center justify-center"
+          className={`relative max-w-[94vw] max-h-[85vh] p-4 flex flex-col items-center justify-center ${
+            isScreenLocked ? 'pointer-events-none' : 'pointer-events-auto cursor-grab active:cursor-grabbing'
+          }`}
+          onPointerDown={handlePointerDown}
         >
           {/* Practice Frame Container */}
           <div 
@@ -1507,13 +1749,16 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
       </div>
 
       {/* 3. PHYSICAL EXPERIENCE TOOLBAR - TOP HUD */}
-      <div className="absolute top-0 inset-x-0 z-30 p-2 sm:p-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex items-center justify-between pointer-events-auto">
+      <div 
+        className="absolute top-0 inset-x-0 z-[9999] p-2 sm:p-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex items-center justify-between pointer-events-none"
+        style={{ zIndex: 9999 }}
+      >
         {/* Left: Back Button & Essential Controls */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
           <button
             id="ar-back-btn"
             onClick={onBackToMenu}
-            className="px-2.5 sm:px-3 py-2 bg-neutral-900/95 hover:bg-neutral-800 text-white rounded-xl text-xs font-semibold border border-neutral-700/80 transition flex items-center gap-1 shadow cursor-pointer active:scale-95"
+            className="px-2.5 sm:px-3 py-2 bg-neutral-900/95 hover:bg-neutral-800 text-white rounded-xl text-xs font-semibold border border-neutral-700/80 transition flex items-center gap-1 shadow cursor-pointer active:scale-95 pointer-events-auto"
           >
             ← Thoát
           </button>
@@ -1624,7 +1869,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
         )}
 
         {/* Right Action Buttons */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
           {/* UNIVERSAL COLLAPSE / EXPAND BUTTON (Desktop only, mobile has bottom dock) */}
           {deviceMode === 'desktop' && (
             <button
@@ -1712,7 +1957,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
             <button
               id="ar-camera-toggle"
               onClick={() => setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'))}
-              className="p-2 rounded-xl bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700/80 transition shadow cursor-pointer active:scale-95"
+              className="p-2 rounded-xl bg-neutral-900/95 hover:bg-neutral-800 text-white border border-neutral-700/80 transition shadow cursor-pointer active:scale-95 pointer-events-auto"
               title="Đổi camera trước / sau"
             >
               <RotateCw className="w-4 h-4 text-cyan-300" />
@@ -1723,7 +1968,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
           <button
             id="ar-guide-btn"
             onClick={onOpenGuide}
-            className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500/60 transition shadow cursor-pointer active:scale-95"
+            className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500/60 transition shadow cursor-pointer active:scale-95 pointer-events-auto"
             title="Xem cách kê điện thoại trên cốc/sách"
           >
             <HelpCircle className="w-4 h-4" />
@@ -1735,14 +1980,16 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
       {isScreenLocked && (
         <div 
           id="ar-screen-lock-shield"
-          className="absolute inset-0 z-40 touch-none pointer-events-auto flex flex-col items-center justify-between p-6 bg-transparent"
+          className="absolute inset-0 z-[9998] touch-none pointer-events-auto flex flex-col items-center justify-between p-6 bg-transparent"
+          style={{ zIndex: 9998 }}
         >
           {/* Floating Unlock Pill (The ONLY interactive element when locked) */}
           <div className="w-full flex items-center justify-center pt-12">
             <button
               id="ar-floating-unlock-btn"
               onClick={toggleScreenLock}
-              className="px-6 py-3 rounded-full bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-2xl border-2 border-white/80 flex items-center gap-2 transform transition hover:scale-105 active:scale-95 animate-bounce"
+              className="px-6 py-3 rounded-full bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-2xl border-2 border-white/80 flex items-center gap-2 transform transition hover:scale-105 active:scale-95 animate-bounce z-[9999] pointer-events-auto cursor-pointer"
+              style={{ zIndex: 9999 }}
             >
               <Unlock className="w-4 h-4" />
               <span>Chạm vào đây để MỞ KHÓA</span>
@@ -1750,7 +1997,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
           </div>
 
           {/* Persistent calm reminder at bottom */}
-          <div className="px-4 py-2 bg-neutral-950/90 border border-white/20 rounded-2xl text-xs text-neutral-200 shadow-xl text-center max-w-sm">
+          <div className="px-4 py-2 bg-neutral-950/90 border border-white/20 rounded-2xl text-xs text-neutral-200 shadow-xl text-center max-w-sm pointer-events-none">
             🔒 <strong>Đã cố định màn hình:</strong> Bạn có thể tì tay lên mép điện thoại hoặc viết bút thật trên giấy mà không sợ trượt nét.
           </div>
         </div>
@@ -1758,7 +2005,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
 
       {/* Lock Notification Toast */}
       {showLockToast && (
-        <div className="absolute top-16 inset-x-4 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-50 p-3 bg-red-600 text-white text-xs font-semibold rounded-2xl shadow-2xl border border-red-400 flex items-center justify-center gap-2 animate-in slide-in-from-top duration-300">
+        <div className="absolute top-16 inset-x-4 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-[9999] p-3 bg-red-600 text-white text-xs font-semibold rounded-2xl shadow-2xl border border-red-400 flex items-center justify-center gap-2 animate-in slide-in-from-top duration-300 pointer-events-none" style={{ zIndex: 9999 }}>
           <Lock className="w-4 h-4 shrink-0" />
           <span>Màn hình đã khóa hoàn toàn! Bạn có thể thoải mái tì tay viết bút thật.</span>
         </div>
@@ -1768,7 +2015,65 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
       {!isScreenLocked && textLines.length > 1 && (
         <div 
           id="ar-floating-line-nav"
-          className="absolute left-3 top-20 z-30 flex flex-col items-center gap-1.5 p-1.5 bg-neutral-900/95 border border-neutral-700/80 rounded-2xl shadow-2xl pointer-events-auto"
+          className="absolute left-3 top-20 z-[9999] flex flex-col items-center gap-1.5 p-1.5 bg-neutral-900/95 border border-neutral-700/80 rounded-2xl shadow-2xl pointer-events-auto"
+          style={{ zIndex: 9999 }}
+        >
+          <button
+            id="quick-nav-prev-line"
+            onClick={(e) => {
+              e.stopPropagation();
+              handlePrevLine();
+            }}
+            disabled={focusedLineIndex <= 0}
+            className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-white transition shadow cursor-pointer pointer-events-auto"
+            title="Dòng trước (Cuộn lên)"
+          >
+            <ArrowUp className="w-4 h-4 text-cyan-400" />
+          </button>
+
+          <div className="px-1.5 py-1 bg-neutral-950 rounded-lg text-[10px] font-mono font-bold text-white text-center min-w-[36px] pointer-events-none">
+            {focusedLineIndex + 1}/{textLines.length}
+          </div>
+
+          <button
+            id="quick-nav-next-line"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleNextLine();
+            }}
+            disabled={focusedLineIndex >= textLines.length - 1}
+            className="p-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-30 text-white transition shadow shadow-cyan-950 cursor-pointer pointer-events-auto"
+            title="Dòng sau (Cuộn xuống)"
+          >
+            <ArrowDown className="w-4 h-4 text-white" />
+          </button>
+
+          <div className="w-full h-px bg-neutral-700 my-0.5 pointer-events-none" />
+
+          <button
+            id="quick-nav-focus-toggle"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFocusLineMode(!focusLineMode);
+            }}
+            className={`p-2 rounded-xl transition cursor-pointer pointer-events-auto ${
+              focusLineMode 
+                ? 'bg-amber-500 text-neutral-950 font-bold shadow' 
+                : 'bg-neutral-800 text-neutral-400 hover:text-white'
+            }`}
+            title={focusLineMode ? 'Đang làm sáng duy nhất dòng viết hiện tại' : 'Làm sáng duy nhất dòng viết hiện tại (làm mờ dòng khác)'}
+          >
+            <Eye className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* 4C. FLOATING QUICK VISUAL & ZOOM CONTROLLER (Desktop when Right Sidebar collapsed) */}
+      {!isScreenLocked && deviceMode === 'desktop' && !desktopRightOpen && (
+        <div 
+          id="ar-floating-quick-visual-bar"
+          className="absolute right-3 top-20 z-[9999] flex flex-col items-center gap-1.5 p-1.5 bg-neutral-900/95 border border-neutral-700/80 rounded-2xl shadow-2xl pointer-events-auto"
+          style={{ zIndex: 9999 }}
         >
           <button
             id="quick-nav-prev-line"
@@ -2154,10 +2459,13 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
 
           {/* 5B. MOBILE MODE (Touch-friendly Quick Dock + Expandable Bottom Drawer) */}
           {deviceMode === 'mobile' && (
-            <div className="absolute bottom-0 inset-x-0 z-30 pb-3 pt-1 px-2.5 sm:px-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent flex flex-col items-center pointer-events-auto">
+            <div 
+              className="absolute bottom-0 inset-x-0 z-[9999] pb-3 pt-1 px-2.5 sm:px-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent flex flex-col items-center pointer-events-none"
+              style={{ zIndex: 9999 }}
+            >
               {!showControls ? (
                 /* Sleek, Touch-Friendly Bottom Dock on Mobile */
-                <div className="w-full max-w-md flex flex-col items-center gap-1.5 animate-in fade-in slide-in-from-bottom duration-200">
+                <div className="w-full max-w-md flex flex-col items-center gap-1.5 animate-in fade-in slide-in-from-bottom duration-200 pointer-events-auto">
                   {/* Floating Micro-Nudge D-Pad for phones (Effortless alignment without phone shaking) */}
                   {showNudgePad && (
                     <div className="w-full bg-neutral-900/95 border border-cyan-500/50 rounded-2xl p-2.5 shadow-2xl flex flex-col items-center gap-1.5 animate-in zoom-in-95 duration-150 backdrop-blur-md">
@@ -2348,7 +2656,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
                 /* Mobile Bottom Sheet Drawer (Expanded with reduced height so it doesn't block screen) */
                 <div 
                   id="mobile-ar-drawer"
-                  className="w-full max-w-lg bg-neutral-900/95 border border-neutral-700/80 rounded-3xl p-3 sm:p-4 text-white shadow-2xl animate-in slide-in-from-bottom duration-200 max-h-[60vh] flex flex-col"
+                  className="w-full max-w-lg bg-neutral-900/95 border border-neutral-700/80 rounded-3xl p-3 sm:p-4 text-white shadow-2xl animate-in slide-in-from-bottom duration-200 max-h-[60vh] flex flex-col pointer-events-auto"
                 >
                   {/* Top drag bar indicator & Close Button */}
                   <div className="flex items-center justify-between pb-2 mb-2 border-b border-neutral-800">
@@ -2570,6 +2878,78 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
           </div>
         </div>
       )}
+
+      {/* CẢNH BÁO TRANG GIẤY TRẮNG (BLANK DETECTION TOAST) */}
+      {blankWarningNotice && (
+        <div 
+          id="blank-paper-toast"
+          className="fixed top-16 sm:top-20 inset-x-0 z-[1000000] flex justify-center px-4 animate-in slide-in-from-top duration-200 pointer-events-auto"
+          style={{ zIndex: 1000000 }}
+        >
+          <div className="max-w-md bg-amber-950/95 border-2 border-amber-400 text-amber-200 px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md">
+            <span className="text-2xl animate-bounce">⚠️</span>
+            <div className="flex-1 text-xs sm:text-sm font-bold leading-snug">
+              {blankWarningNotice}
+            </div>
+            <button 
+              type="button"
+              onClick={() => setBlankWarningNotice(null)}
+              className="text-amber-400 hover:text-white text-xs font-bold px-2.5 py-1 bg-amber-900/60 rounded-xl cursor-pointer"
+            >
+              Đã hiểu
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* GIAO DIỆN NÚT BẤM "ĐÃ VIẾT XONG - CHẤM ĐIỂM" & "VIẾT LẠI NÉT NÀY" */}
+      <div 
+        id="post-writing-action-bar"
+        className="fixed bottom-20 sm:bottom-16 inset-x-0 z-[999999] flex items-center justify-center gap-2.5 px-3 pointer-events-none"
+        style={{ zIndex: 999999 }}
+      >
+        {/* Nút phụ: "🔄 Viết lại nét này" */}
+        <button
+          id="btn-retry-stroke"
+          type="button"
+          onClick={handleRetryCurrentLetter}
+          className="h-12 px-4 rounded-full bg-neutral-900/95 hover:bg-neutral-800 text-neutral-200 hover:text-white font-bold text-xs sm:text-sm border border-neutral-700 shadow-2xl backdrop-blur-md active:scale-95 flex items-center gap-1.5 transition cursor-pointer pointer-events-auto"
+          title="Làm mới để viết lại chữ này từ đầu"
+        >
+          <RotateCcw className="w-4 h-4 text-amber-400" />
+          <span className="hidden xs:inline">Viết lại nét này</span>
+          <span className="xs:hidden">Viết lại</span>
+        </button>
+
+        {/* Nút chính: "📸 Đã viết xong - Chấm điểm" */}
+        <button
+          id="btn-capture-grade"
+          data-finish-id="btn-finish-check"
+          type="button"
+          onClick={handleFinishAndCheck}
+          disabled={isEvaluating}
+          className="min-h-[50px] px-6 py-3 rounded-full bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-black text-sm sm:text-base shadow-2xl shadow-emerald-950/90 border-2 border-emerald-300/60 active:scale-95 flex items-center gap-2 transition cursor-pointer pointer-events-auto ring-4 ring-emerald-500/30"
+          style={{
+            padding: '14px 24px',
+            borderRadius: '30px',
+            boxShadow: '0 10px 25px -5px rgba(16, 185, 129, 0.6), 0 8px 10px -6px rgba(16, 185, 129, 0.6)',
+            zIndex: 999999,
+            pointerEvents: 'auto',
+          }}
+        >
+          <Camera className="w-5 h-5 text-amber-300" />
+          <span>{isEvaluating ? 'Đang phân tích nét...' : '📸 Đã viết xong - Chấm điểm'}</span>
+        </button>
+      </div>
+
+      {/* Popup Bảng Kết Quả Đánh Giá Chữ Viết (Handwriting Assessment Modal) */}
+      <HandwritingAssessmentModal
+        isOpen={isAssessmentModalOpen}
+        result={assessmentResult}
+        onClose={() => setIsAssessmentModalOpen(false)}
+        onRetry={handleRetryCurrentLetter}
+        onNextLetter={handleNextLetter}
+      />
 
       {/* Validation Matrix Modal for Judging Panel (BGK) */}
       <ValidationMatrixModal

@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Eraser, RotateCcw, Check, Sparkles, Volume2, ArrowLeft, ShieldCheck, Activity } from 'lucide-react';
+import { Eraser, RotateCcw, Check, Sparkles, Volume2, ArrowLeft, ShieldCheck, Activity, Camera } from 'lucide-react';
 import { GridType } from '../types';
 import { playStrokeSound, speakText, playASMRPenScratch } from '../utils/audio';
 import { awardExp } from '../utils/gamification';
@@ -15,6 +15,11 @@ import {
 } from '../utils/realtimeDeviationDetector';
 import { getStrokesForCharacter } from '../data/strokeData';
 import { ValidationMatrixModal } from './ValidationMatrixModal';
+import { HandwritingAssessmentModal } from './HandwritingAssessmentModal';
+import { 
+  evaluatePostWritingSession, 
+  PostWritingAssessmentResult 
+} from '../utils/handwritingEvaluator';
 
 interface DigitalCanvasProps {
   charOrText: string;
@@ -48,6 +53,12 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
   const [isValidationModalOpen, setIsValidationModalOpen] = useState<boolean>(false);
   const [isAudioBuzzerEnabled, setIsAudioBuzzerEnabled] = useState<boolean>(true);
   const currentStrokePointsRef = useRef<Point2D[]>([]);
+  const allUserPointsRef = useRef<Point2D[]>([]);
+  const [assessmentResult, setAssessmentResult] = useState<PostWritingAssessmentResult | null>(null);
+  const [isAssessmentModalOpen, setIsAssessmentModalOpen] = useState<boolean>(false);
+  const [isEvaluating, setIsEvaluating] = useState<boolean>(false);
+  const [currentChar, setCurrentChar] = useState<string>(charOrText);
+  const [blankWarningNotice, setBlankWarningNotice] = useState<string | null>(null);
 
   // 5. Real-time Point-to-Path Deviation Detection Engine
   const deviationDetectorRef = useRef(new RealtimeStrokeDeviationDetector({
@@ -140,6 +151,7 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
     // 1. Real-time Point-to-Path Deviation Validation (Frame-by-frame)
     const normX = (x / rect.width) * 100;
     const normY = (y / rect.height) * 100;
+    allUserPointsRef.current.push({ x: normX, y: normY });
     const fb = deviationDetectorRef.current.processFrame({ x: normX, y: normY }, false);
     setRealtimeFeedback(fb);
 
@@ -216,6 +228,75 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     setHasDrawn(false);
     setStrokeHistory([]);
+    allUserPointsRef.current = [];
+    letterStrokesRef.current = 0;
+  };
+
+  // Chấm điểm sau khi viết xong trên Canvas
+  const handleFinishAndCheck = () => {
+    setIsEvaluating(true);
+    setBlankWarningNotice(null);
+
+    // Kiểm tra trang giấy trắng (chưa viết gì)
+    if (!hasDrawn || allUserPointsRef.current.length < 5) {
+      setBlankWarningNotice('⚠️ Bạn chưa viết chữ lên giấy! Vui lòng viết theo mẫu rồi bấm Chấm điểm lại nhé.');
+      setTimeout(() => setBlankWarningNotice(null), 5000);
+      setIsEvaluating(false);
+      return;
+    }
+
+    try {
+      const char = currentChar.trim().charAt(0) || 'a';
+      const recordedErrors: string[] = [];
+      if (realtimeFeedback.status === 'DEVIATION_ALERT') recordedErrors.push('LỆCH_QUỸ_ĐẠO');
+      if (realtimeFeedback.status === 'DIRECTION_ERROR') recordedErrors.push('SAI_HƯỚNG_NÉT');
+
+      const result = evaluatePostWritingSession({
+        character: char,
+        sourceElement: canvasRef.current,
+        drawnStrokesCount: letterStrokesRef.current || (hasDrawn ? 1 : 0),
+        userPoints: allUserPointsRef.current,
+        recordedErrors,
+      });
+
+      setAssessmentResult(result);
+      setIsAssessmentModalOpen(true);
+
+      if (result.overall_score >= 85) {
+        awardExp(15, `Xuất sắc! Viết chuẩn chữ '${char}' trên bảng số`);
+      } else if (result.overall_score >= 60) {
+        awardExp(8, `Hoàn thành bài luyện chữ '${char}'`);
+      } else {
+        awardExp(3, `Nỗ lực rèn chữ '${char}'`);
+      }
+    } catch (err) {
+      console.error('Lỗi khi chấm điểm canvas:', err);
+    } finally {
+      setIsEvaluating(false);
+    }
+  };
+
+  const handleRetryCurrentLetter = () => {
+    setIsAssessmentModalOpen(false);
+    handleClear();
+    setAssessmentResult(null);
+  };
+
+  const handleNextLetter = () => {
+    setIsAssessmentModalOpen(false);
+    setAssessmentResult(null);
+    handleClear();
+
+    const VIETNAMESE_ALPHABET = ['a', 'ă', 'â', 'b', 'c', 'd', 'đ', 'e', 'ê', 'g', 'h', 'i', 'k', 'l', 'm', 'n', 'o', 'ô', 'ơ', 'p', 'q', 'r', 's', 't', 'u', 'ư', 'v', 'x', 'y'];
+    const cur = currentChar.trim().toLowerCase();
+    const idx = VIETNAMESE_ALPHABET.indexOf(cur);
+    if (idx !== -1 && idx < VIETNAMESE_ALPHABET.length - 1) {
+      setCurrentChar(VIETNAMESE_ALPHABET[idx + 1]);
+    } else if (idx === VIETNAMESE_ALPHABET.length - 1) {
+      setCurrentChar(VIETNAMESE_ALPHABET[0]);
+    } else {
+      setCurrentChar('a');
+    }
   };
 
   const handleUndo = () => {
@@ -503,6 +584,71 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
           💡 <strong className="text-neutral-300">Lưu ý luyện nét:</strong> {tips}
         </div>
       )}
+
+      {/* CẢNH BÁO TRANG GIẤY TRẮNG (BLANK DETECTION TOAST) */}
+      {blankWarningNotice && (
+        <div 
+          id="blank-paper-toast"
+          className="fixed top-16 sm:top-20 inset-x-0 z-[1000000] flex justify-center px-4 animate-in slide-in-from-top duration-200 pointer-events-auto"
+          style={{ zIndex: 1000000 }}
+        >
+          <div className="max-w-md bg-amber-950/95 border-2 border-amber-400 text-amber-200 px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md">
+            <span className="text-2xl animate-bounce">⚠️</span>
+            <div className="flex-1 text-xs sm:text-sm font-bold leading-snug">
+              {blankWarningNotice}
+            </div>
+            <button 
+              type="button"
+              onClick={() => setBlankWarningNotice(null)}
+              className="text-amber-400 hover:text-white text-xs font-bold px-2.5 py-1 bg-amber-900/60 rounded-xl cursor-pointer"
+            >
+              Đã hiểu
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* GIAO DIỆN NÚT BẤM "ĐÃ VIẾT XONG - CHẤM ĐIỂM" & "VIẾT LẠI NÉT NÀY" */}
+      <div className="w-full max-w-xl mt-4 flex items-center justify-center gap-3">
+        <button
+          id="btn-retry-stroke"
+          type="button"
+          onClick={handleRetryCurrentLetter}
+          className="h-12 px-5 rounded-full bg-neutral-900 hover:bg-neutral-850 text-neutral-200 hover:text-white font-bold text-xs sm:text-sm border border-neutral-700 shadow-lg active:scale-95 flex items-center gap-1.5 transition cursor-pointer"
+          title="Xóa để viết lại nét chữ này"
+        >
+          <RotateCcw className="w-4 h-4 text-amber-400" />
+          <span>Viết lại nét này</span>
+        </button>
+
+        <button
+          id="btn-capture-grade"
+          data-finish-id="btn-finish-check"
+          type="button"
+          onClick={handleFinishAndCheck}
+          disabled={isEvaluating}
+          className="min-h-[50px] px-7 py-3 rounded-full bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-black text-sm sm:text-base shadow-2xl shadow-emerald-950/80 border-2 border-emerald-300/60 active:scale-95 flex items-center gap-2 transition cursor-pointer ring-4 ring-emerald-500/20"
+          style={{
+            padding: '14px 24px',
+            borderRadius: '30px',
+            boxShadow: '0 10px 25px -5px rgba(16, 185, 129, 0.6), 0 8px 10px -6px rgba(16, 185, 129, 0.6)',
+            zIndex: 999999,
+            pointerEvents: 'auto',
+          }}
+        >
+          <Camera className="w-5 h-5 text-amber-300" />
+          <span>{isEvaluating ? 'Đang phân tích nét...' : '📸 Đã viết xong - Chấm điểm'}</span>
+        </button>
+      </div>
+
+      {/* Popup Bảng Kết Quả Đánh Giá Chữ Viết (Handwriting Assessment Modal) */}
+      <HandwritingAssessmentModal
+        isOpen={isAssessmentModalOpen}
+        result={assessmentResult}
+        onClose={() => setIsAssessmentModalOpen(false)}
+        onRetry={handleRetryCurrentLetter}
+        onNextLetter={handleNextLetter}
+      />
 
       {/* Validation Matrix Modal for Judging Panel */}
       <ValidationMatrixModal

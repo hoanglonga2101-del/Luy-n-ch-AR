@@ -190,7 +190,7 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
   };
 
   return (
-    <div className="w-full min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center py-4 sm:py-6 px-3 sm:px-6">
+    <div className="w-full min-h-[100dvh] bg-neutral-950 text-neutral-100 flex flex-col items-center py-4 sm:py-6 px-3 sm:px-6" style={{ minHeight: '100dvh' }}>
       <div className="w-full max-w-4xl space-y-5 sm:space-y-6">
         {/* Header Intro */}
         <div className="bg-gradient-to-br from-indigo-950/90 via-neutral-900 to-cyan-950/90 border-2 border-indigo-700/50 rounded-3xl p-4 sm:p-6 shadow-xl space-y-2">

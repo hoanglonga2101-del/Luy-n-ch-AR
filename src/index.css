@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* iOS Safari Dynamic Viewport (100dvh) & Touch Safety */
+html, body, #root {
+  height: 100%;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
 /* 15 Google Fonts for English Hand-lettering & Calligraphy Tracing */
 .font-great-vibes {
   font-family: 'Great Vibes', cursive;
