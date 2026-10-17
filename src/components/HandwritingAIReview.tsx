@@ -128,23 +128,25 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
           feedbackResult.strictEvaluation = data.strictEvaluation;
         }
 
-        // RÀNG BUỘC KẾT QUẢ ĐỐI CHIẾU:
-        // Nếu phát hiện nét chữ nhưng sai hoàn toàn so với chữ mẫu:
-        // Tổng điểm phải < 40 điểm, thông báo rõ nét viết chưa đúng mẫu chữ yêu cầu.
-        if (strokeEval.finalScore < 40 || strokeEval.status === 'FAIL') {
-          feedbackResult.overallScore = Math.min(35, strokeEval.finalScore);
-          feedbackResult.grade = "Chưa đạt - Nét viết chưa đúng mẫu chữ yêu cầu";
+        // ĐỐI CHIẾU CHỦ ĐỘNG (POSITIVE MATCHING RESULT):
+        feedbackResult.overallScore = strokeEval.finalScore;
+        feedbackResult.grade = strokeEval.grade || (
+          strokeEval.finalScore >= 85
+            ? "Xuất sắc! Nét chữ đúng chuẩn"
+            : strokeEval.finalScore >= 65
+            ? "Khá tốt! Cần nắn nót thêm đường cong/độ cao"
+            : "Chưa đúng mẫu! Hãy xem lại hướng đi của nét"
+        );
+        if (strokeEval.finalScore < 65) {
           feedbackResult.improvements = [
-            strokeEval.warningText || "⚠️ Nét viết chưa đúng mẫu chữ yêu cầu! Bé hãy quan sát nét mẫu màu hồng và viết lại cẩn thận nhé."
+            strokeEval.warningText || "Chưa đúng mẫu! Hãy xem lại hướng đi của nét và đồ chậm lại theo nét mẫu nhé."
           ];
-          if (feedbackResult.slantAnalysis) feedbackResult.slantAnalysis.score = Math.min(30, strokeEval.trajectoryScore);
-          if (feedbackResult.sizeConsistency) feedbackResult.sizeConsistency.score = Math.min(30, strokeEval.completenessScore);
+          if (feedbackResult.slantAnalysis) feedbackResult.slantAnalysis.score = strokeEval.trajectoryScore;
+          if (feedbackResult.sizeConsistency) feedbackResult.sizeConsistency.score = strokeEval.completenessScore;
           if (feedbackResult.strictEvaluation?.metrics) {
             feedbackResult.strictEvaluation.metrics.overall_score = feedbackResult.overallScore;
-            feedbackResult.strictEvaluation.metrics.start_end_accuracy = Math.min(30, Math.round(strokeEval.precision * 40));
+            feedbackResult.strictEvaluation.metrics.start_end_accuracy = Math.round(strokeEval.precision * 50);
           }
-        } else if (strokeEval.finalScore >= 80) {
-          feedbackResult.overallScore = Math.max(feedbackResult.overallScore, strokeEval.finalScore);
         }
       } else {
         throw new Error(data.error || 'Không thể phân tích ảnh nét chữ.');
@@ -158,7 +160,8 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
         return;
       }
 
-      // Calculate realistic score derived strictly from actual 2-way IoU and precision/recall
+      const isWrongSample = strokeEval.finalScore < 65;
+
       const strictFallback = {
         target_character: targetChar,
         stroke_index: strokeIndex,
@@ -166,14 +169,14 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
         metrics: {
           overall_score: strokeEval.finalScore,
           trajectory_score: strokeEval.trajectoryScore,
-          start_end_accuracy: Math.max(45, Math.round(100 - strokeEval.penalty * 1.5)),
+          start_end_accuracy: isWrongSample ? Math.max(20, Math.round(strokeEval.precision * 50)) : Math.max(65, Math.round(100 - strokeEval.penalty * 1.5)),
           proportion_score: strokeEval.completenessScore,
           smoothness_score: Math.max(40, Math.round(strokeEval.precision * 95)),
         },
         detected_errors: strokeEval.warningText ? [
           {
             error_type: "LECH_NET_SAI_MAU" as const,
-            severity: "HIGH" as const,
+            severity: isWrongSample ? ("HIGH" as const) : ("LOW" as const),
             instruction: strokeEval.warningText,
           }
         ] : [
@@ -184,18 +187,20 @@ export const HandwritingAIReview: React.FC<HandwritingAIReviewProps> = ({
           }
         ],
         learning_path_recommendation: {
-          focus_area: strokeEval.finalScore < 50 ? "Quỹ đạo bám nét mẫu" : "Nét móc ngược & Độ nghiêng tự nhiên",
-          suggested_next_exercise: strokeEval.finalScore < 50
+          focus_area: strokeEval.finalScore < 65 ? "Quỹ đạo bám nét mẫu" : "Nét móc ngược & Độ nghiêng tự nhiên",
+          suggested_next_exercise: strokeEval.finalScore < 65
             ? "Đồ theo nét chữ mẫu màu hồng để quen tay trước khi viết độc lập"
             : "Luyện 3 dòng chữ mẫu giữ khoảng cách chuẩn bằng 1 thân chữ 'o'",
         },
       };
 
-      let gradeText = "Khá - Nét chữ đều và sáng";
-      if (strokeEval.finalScore >= 88) gradeText = "Xuất sắc - Nét chữ chuẩn nét mẫu ⭐";
-      else if (strokeEval.finalScore >= 75) gradeText = "Khá tốt - Nét chữ thanh thoát, đúng quy tắc";
-      else if (strokeEval.finalScore >= 50) gradeText = "Trung bình - Cần nắn lại tỷ lệ ô ly";
-      else gradeText = "Lệch nét / Viết sai mẫu - Cần rèn luyện lại";
+      const gradeText = strokeEval.grade || (
+        strokeEval.finalScore >= 85
+          ? "Xuất sắc! Nét chữ đúng chuẩn"
+          : strokeEval.finalScore >= 65
+          ? "Khá tốt! Cần nắn nót thêm đường cong/độ cao"
+          : "Chưa đúng mẫu! Hãy xem lại hướng đi của nét"
+      );
 
       feedbackResult = {
         overallScore: strokeEval.finalScore,

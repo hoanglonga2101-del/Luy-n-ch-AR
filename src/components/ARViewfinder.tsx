@@ -352,23 +352,25 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
           finalFeedback.strictEvaluation = data.strictEvaluation;
         }
 
-        // RÀNG BUỘC KẾT QUẢ ĐỐI CHIẾU:
-        // Nếu phát hiện nét chữ nhưng sai hoàn toàn so với chữ mẫu:
-        // Tổng điểm phải < 40 điểm, thông báo rõ nét viết chưa đúng mẫu chữ yêu cầu.
-        if (strokeEval.finalScore < 40 || strokeEval.status === 'FAIL') {
-          finalFeedback.overallScore = Math.min(35, strokeEval.finalScore);
-          finalFeedback.grade = "Chưa đạt - Nét viết chưa đúng mẫu chữ yêu cầu";
+        // ĐỐI CHIẾU CHỦ ĐỘNG (POSITIVE MATCHING RESULT):
+        finalFeedback.overallScore = strokeEval.finalScore;
+        finalFeedback.grade = strokeEval.grade || (
+          strokeEval.finalScore >= 85
+            ? "Xuất sắc! Nét chữ đúng chuẩn"
+            : strokeEval.finalScore >= 65
+            ? "Khá tốt! Cần nắn nót thêm đường cong/độ cao"
+            : "Chưa đúng mẫu! Hãy xem lại hướng đi của nét"
+        );
+        if (strokeEval.finalScore < 65) {
           finalFeedback.improvements = [
-            strokeEval.warningText || "⚠️ Nét viết chưa đúng mẫu chữ yêu cầu! Bé hãy quan sát nét mẫu màu hồng và viết lại cẩn thận nhé."
+            strokeEval.warningText || "Chưa đúng mẫu! Hãy xem lại hướng đi của nét và quan sát nét mẫu màu hồng nhé."
           ];
-          if (finalFeedback.slantAnalysis) finalFeedback.slantAnalysis.score = Math.min(30, strokeEval.trajectoryScore);
-          if (finalFeedback.sizeConsistency) finalFeedback.sizeConsistency.score = Math.min(30, strokeEval.completenessScore);
+          if (finalFeedback.slantAnalysis) finalFeedback.slantAnalysis.score = strokeEval.trajectoryScore;
+          if (finalFeedback.sizeConsistency) finalFeedback.sizeConsistency.score = strokeEval.completenessScore;
           if (finalFeedback.strictEvaluation?.metrics) {
             finalFeedback.strictEvaluation.metrics.overall_score = finalFeedback.overallScore;
-            finalFeedback.strictEvaluation.metrics.start_end_accuracy = Math.min(30, Math.round(strokeEval.precision * 40));
+            finalFeedback.strictEvaluation.metrics.start_end_accuracy = Math.round(strokeEval.precision * 50);
           }
-        } else if (strokeEval.finalScore >= 80) {
-          finalFeedback.overallScore = Math.max(finalFeedback.overallScore, strokeEval.finalScore);
         }
       } else {
         throw new Error(data.error || 'Lỗi xử lý hình ảnh');
@@ -382,11 +384,10 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
         return;
       }
 
-      // XÓA BỎ HOÀN TOÀN BIẾN ĐIỂM MẪU VÀ GIÁ TRỊ TỰ GÁN:
-      const isWrongSample = strokeEval.finalScore < 40 || strokeEval.status === 'FAIL';
+      const isWrongSample = strokeEval.finalScore < 65;
       const actualStartEnd = isWrongSample
-        ? Math.min(30, Math.round(strokeEval.precision * 40))
-        : Math.max(35, Math.round(100 - strokeEval.penalty * 1.5));
+        ? Math.max(20, Math.round(strokeEval.precision * 50))
+        : Math.max(65, Math.round(100 - strokeEval.penalty * 1.5));
 
       const strictFallback = {
         target_character: activeChar,
@@ -397,12 +398,12 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
           trajectory_score: strokeEval.trajectoryScore,
           start_end_accuracy: actualStartEnd,
           proportion_score: strokeEval.proportionScore,
-          smoothness_score: Math.max(25, Math.round(strokeEval.precision * 95)),
+          smoothness_score: Math.max(30, Math.round(strokeEval.precision * 95)),
         },
         detected_errors: strokeEval.warningText ? [
           {
             error_type: "LECH_NET_SAI_MAU" as const,
-            severity: "HIGH" as const,
+            severity: isWrongSample ? ("HIGH" as const) : ("LOW" as const),
             instruction: strokeEval.warningText,
           }
         ] : [],
@@ -414,11 +415,13 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
         },
       };
 
-      let gradeText = "Khá - Nét chữ đều và sáng";
-      if (strokeEval.finalScore >= 88) gradeText = "Xuất sắc - Nét chữ chuẩn nét mẫu ⭐";
-      else if (strokeEval.finalScore >= 75) gradeText = "Khá tốt - Nét chữ thanh thoát, đúng quy tắc";
-      else if (strokeEval.finalScore >= 50) gradeText = "Trung bình - Cần nắn lại tỷ lệ ô ly";
-      else gradeText = "Chưa đạt - Nét viết chưa đúng mẫu chữ yêu cầu";
+      const gradeText = strokeEval.grade || (
+        strokeEval.finalScore >= 85
+          ? "Xuất sắc! Nét chữ đúng chuẩn"
+          : strokeEval.finalScore >= 65
+          ? "Khá tốt! Cần nắn nót thêm đường cong/độ cao"
+          : "Chưa đúng mẫu! Hãy xem lại hướng đi của nét"
+      );
 
       finalFeedback = {
         overallScore: strokeEval.finalScore,
@@ -483,7 +486,7 @@ export const ARViewfinder: React.FC<ARViewfinderProps> = ({
       sampleText: currentText,
       score: finalFeedback.overallScore,
       grade: finalFeedback.grade,
-      imageUrl: inkDetection.canvasDataUrl || undefined,
+      imageUrl: detectedStrokes.canvasDataUrl || undefined,
       strengths: finalFeedback.strengths,
       improvements: finalFeedback.improvements,
       expGained: earnedPoints,

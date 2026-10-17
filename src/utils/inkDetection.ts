@@ -74,6 +74,9 @@ export interface StrokeEvaluationResult {
   message?: string;
   finalScore: number; // 0 - 100 (alias: finalCalculatedScore)
   finalCalculatedScore: number; // 0 - 100
+  baseScore?: number;
+  hitCount?: number;
+  totalWaypoints?: number;
   trajectoryScore: number; // 0 - 50 (Trajectory Accuracy)
   completenessScore: number; // 0 - 30 (Centerline Completeness)
   proportionScore: number; // 0 - 20 (Height & Aspect Ratio)
@@ -87,6 +90,7 @@ export interface StrokeEvaluationResult {
   inTemplatePixels: number;
   outOfBoundsPixels: number;
   status: 'PASS' | 'NEEDS_IMPROVEMENT' | 'FAIL';
+  grade?: string;
   warningText?: string;
   debugOverlayUrl?: string;
 }
@@ -676,83 +680,245 @@ function extractTemplateCenterlinePoints(
 }
 
 /**
- * HÀM ĐỐI CHIẾU CHẤM ĐIỂM VỚI MẪU (evaluateAgainstTemplate / evaluateHandwriting)
+ * Lấy mẫu đều chữ mẫu thành đúng 100 điểm mốc (Waypoints) trải dài từ điểm đầu đến điểm cuối
+ */
+export function sampleTemplateTo100Waypoints(
+  rawPoints: Array<{ x: number; y: number }>,
+  targetCount: number = 100
+): Array<{ x: number; y: number; index: number }> {
+  if (!rawPoints || rawPoints.length === 0) return [];
+  if (rawPoints.length === 1) {
+    return Array.from({ length: targetCount }, (_, i) => ({
+      x: rawPoints[0].x,
+      y: rawPoints[0].y,
+      index: i,
+    }));
+  }
+
+  // Tính độ dài cung tích lũy (Cumulative Arc Length)
+  const cumDist: number[] = [0];
+  let totalLength = 0;
+  for (let i = 1; i < rawPoints.length; i++) {
+    const dx = rawPoints[i].x - rawPoints[i - 1].x;
+    const dy = rawPoints[i].y - rawPoints[i - 1].y;
+    const dist = Math.hypot(dx, dy);
+    totalLength += dist;
+    cumDist.push(totalLength);
+  }
+
+  if (totalLength < 1e-4) {
+    return Array.from({ length: targetCount }, (_, i) => ({
+      x: rawPoints[0].x,
+      y: rawPoints[0].y,
+      index: i,
+    }));
+  }
+
+  const waypoints: Array<{ x: number; y: number; index: number }> = [];
+  let segIdx = 0;
+
+  for (let i = 0; i < targetCount; i++) {
+    const targetDist = (i / (targetCount - 1)) * totalLength;
+
+    while (segIdx < cumDist.length - 2 && cumDist[segIdx + 1] < targetDist) {
+      segIdx++;
+    }
+
+    const segStartDist = cumDist[segIdx];
+    const segEndDist = cumDist[segIdx + 1];
+    const segLen = Math.max(1e-5, segEndDist - segStartDist);
+    const t = Math.max(0, Math.min(1, (targetDist - segStartDist) / segLen));
+
+    const pA = rawPoints[segIdx];
+    const pB = rawPoints[segIdx + 1];
+
+    waypoints.push({
+      x: pA.x + t * (pB.x - pA.x),
+      y: pA.y + t * (pB.y - pA.y),
+      index: i,
+    });
+  }
+
+  return waypoints;
+}
+
+export const MIN_INK_THRESHOLD = 50; // Ngưỡng tối thiểu số pixel nét vẽ thực tế
+
+/**
+ * Trích xuất danh sách pixel nét vẽ thực tế của người dùng từ canvas
+ */
+export function extractUserInkPixels(canvas: HTMLCanvasElement): Array<{ x: number; y: number }> {
+  if (!canvas || canvas.width === 0 || canvas.height === 0) return [];
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return [];
+
+  const { width, height } = canvas;
+  let imgData: ImageData;
+  try {
+    imgData = ctx.getImageData(0, 0, width, height);
+  } catch {
+    return [];
+  }
+  const data = imgData.data;
+  const totalPixels = width * height;
+
+  // Kiểm tra canvas kỹ thuật số có kênh alpha trong suốt (Digital Canvas)
+  let transparentPixelCount = 0;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 220) {
+      transparentPixelCount++;
+    }
+  }
+
+  const isDigitalCanvas = transparentPixelCount > totalPixels * 0.08;
+  const inkPoints: Array<{ x: number; y: number }> = [];
+
+  if (isDigitalCanvas) {
+    // Canvas vẽ điện tử: lọc các pixel có nét cọ (alpha > 40 và không phải màu trắng)
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const idx = (row + x) * 4;
+        const a = data[idx + 3];
+        if (a > 40) {
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          // Loại trừ màu trắng nền
+          if (r < 245 || g < 245 || b < 245) {
+            inkPoints.push({ x, y });
+          }
+        }
+      }
+    }
+    return inkPoints;
+  }
+
+  // Canvas chụp thực tế từ camera (ảnh chụp vở, mặt bàn, bảng con...)
+  const strokeCheck = extractHandwritingStrokes(canvas);
+  if (!strokeCheck.hasStrokes) {
+    return [];
+  }
+
+  for (const stroke of strokeCheck.strokes) {
+    for (const pt of stroke.points) {
+      inkPoints.push(pt);
+    }
+  }
+
+  return inkPoints;
+}
+
+function createZeroInkResult(detectedPixels: number = 0): StrokeEvaluationResult {
+  return {
+    hasInk: false,
+    hasStrokes: false,
+    finalScore: 0,
+    finalCalculatedScore: 0,
+    baseScore: 0,
+    hitCount: 0,
+    totalWaypoints: 100,
+    trajectoryScore: 0,
+    completenessScore: 0,
+    proportionScore: 0,
+    penalty: 0,
+    precision: 0,
+    recall: 0,
+    totalInkPoints: detectedPixels,
+    pointsInSafeZone: 0,
+    centerlineCoverage: 0,
+    userInkPixels: detectedPixels,
+    inTemplatePixels: 0,
+    outOfBoundsPixels: 0,
+    status: 'FAIL',
+    grade: "Chưa đúng mẫu! Hãy xem lại hướng đi của nét",
+    message: NO_STROKES_DETECTED_MESSAGE,
+    warningText: NO_STROKES_DETECTED_MESSAGE,
+  };
+}
+
+/**
+ * HÀM CHẤM ĐIỂM CHỮ VIẾT TAY THEO NGUYÊN LÝ "ĐO ĐỘ BAO PHỦ CHỦ ĐỘNG" (Positive Matching Logic)
  * 
- * CHỈ ĐƯỢC GỌI SAU KHI ĐÃ XÁC NHẬN CÓ CHỮ THẬT BẰNG extractHandwritingStrokes.
- * Xóa bỏ hoàn toàn giá trị tự gán ảo. Nếu viết sai hoàn toàn mẫu chữ, điểm < 40 điểm!
+ * 1. ĐIỀU KIỆN TIÊN QUYẾT: PHẢI CÓ NÉT MỰC MỚI TÍNH ĐIỂM (Zero-Ink Lock)
+ *    - Đếm tổng số pixel nét vẽ thực tế (User Ink Points).
+ *    - Nếu tổng pixel nét vẽ < MIN_INK_THRESHOLD: Điểm số = 0, chặn lại và thông báo:
+ *      "⚠️ Chưa phát hiện nét chữ trên mặt phẳng! Vui lòng viết chữ trước khi chấm điểm."
+ * 
+ * 2. CÔNG THỨC CHẤM ĐIỂM: TÍNH ĐIỂM KHỚP (POSITIVE MATCHING):
+ *    - Vùng đệm dung sai Tolerance Buffer bán kính R = 25px - 30px (chuẩn 28px).
+ *    - Chia nét chữ mẫu thành 100 điểm mốc (Waypoints) trải đều từ điểm bắt đầu đến điểm kết thúc.
+ *    - Với mỗi điểm mốc, kiểm tra xem có nét mực người dùng trong bán kính R.
+ *    - Hit_Count = số điểm mốc được đồ trúng.
+ *    - Base Score = (Hit_Count / 100) * 100.
+ * 
+ * 3. XỬ LÝ NÉT BÚT MẢNH VÀ ĐỘ LỆCH TỰ NHIÊN:
+ *    - Không phạt điểm nếu nét bút mảnh hơn nét mẫu (chỉ cần có mực chạm bán kính R).
+ *    - Cho phép dung sai góc nghiêng và xê dịch nhẹ (±15%).
+ *    - Chỉ trừ điểm phạt khi có nét vẽ nguệch ngoạc văng hẳn ra ngoài khung ô ly cho phép.
+ * 
+ * 4. BẢNG PHÂN LOẠI KẾT QUẢ RÕ RÀNG:
+ *    - Từ 85 - 100 điểm: "Xuất sắc! Nét chữ đúng chuẩn"
+ *    - Từ 65 - 84 điểm:  "Khá tốt! Cần nắn nót thêm đường cong/độ cao"
+ *    - Dưới 65 điểm:     "Chưa đúng mẫu! Hãy xem lại hướng đi của nét"
  */
 export function evaluateHandwriting(
-  canvasVideoSnapshot: HTMLCanvasElement,
-  characterTemplate: string | StrokePath[],
+  userInkCanvas: HTMLCanvasElement,
+  templatePoints: Array<{ x: number; y: number }> | string | StrokePath[],
   options?: {
     tolerancePx?: number;
+    minInkThreshold?: number;
     logDebug?: boolean;
     preValidatedStrokes?: DetectedContourStroke[];
   }
 ): StrokeEvaluationResult {
-  if (!canvasVideoSnapshot || canvasVideoSnapshot.width === 0 || canvasVideoSnapshot.height === 0) {
-    return {
-      hasInk: false,
-      hasStrokes: false,
-      message: NO_STROKES_DETECTED_MESSAGE,
-      finalScore: 0,
-      finalCalculatedScore: 0,
-      trajectoryScore: 0,
-      completenessScore: 0,
-      proportionScore: 0,
-      penalty: 0,
-      precision: 0,
-      recall: 0,
-      totalInkPoints: 0,
-      pointsInSafeZone: 0,
-      centerlineCoverage: 0,
-      userInkPixels: 0,
-      inTemplatePixels: 0,
-      outOfBoundsPixels: 0,
-      status: 'FAIL',
-      warningText: NO_STROKES_DETECTED_MESSAGE,
-    };
+  const minInkThreshold = options?.minInkThreshold || MIN_INK_THRESHOLD;
+  const toleranceR = options?.tolerancePx || 28; // Bán kính dung sai R = 25px đến 30px
+
+  // 1. ĐIỀU KIỆN TIÊN QUYẾT: PHẢI CÓ NÉT MỰC MỚI TÍNH ĐIỂM (Zero-Ink Lock)
+  if (!userInkCanvas || userInkCanvas.width === 0 || userInkCanvas.height === 0) {
+    return createZeroInkResult();
   }
 
-  // 1. TIỀN KIỂM TRA PHÁT HIỆN NÉT CHỮ THỰC TẾ
-  const strokeCheck = extractHandwritingStrokes(canvasVideoSnapshot);
-  if (!strokeCheck.hasStrokes || strokeCheck.totalLength < MIN_STROKE_LENGTH) {
-    return {
-      hasInk: false,
-      hasStrokes: false,
-      message: NO_STROKES_DETECTED_MESSAGE,
-      finalScore: 0,
-      finalCalculatedScore: 0,
-      trajectoryScore: 0,
-      completenessScore: 0,
-      proportionScore: 0,
-      penalty: 0,
-      precision: 0,
-      recall: 0,
-      totalInkPoints: 0,
-      pointsInSafeZone: 0,
-      centerlineCoverage: 0,
-      userInkPixels: 0,
-      inTemplatePixels: 0,
-      outOfBoundsPixels: 0,
-      status: 'FAIL',
-      warningText: NO_STROKES_DETECTED_MESSAGE,
-    };
+  const width = userInkCanvas.width;
+  const height = userInkCanvas.height;
+
+  // Bước 1: Đếm tổng số pixel nét vẽ thực tế (User Ink Points)
+  const userInkPoints = extractUserInkPixels(userInkCanvas);
+  const totalInkPoints = userInkPoints.length;
+
+  // Nếu tổng số pixel nét vẽ < MIN_INK_THRESHOLD: KHÔNG ĐƯỢC CHẤM ĐIỂM. Điểm số = 0!
+  if (totalInkPoints < minInkThreshold) {
+    return createZeroInkResult(totalInkPoints);
   }
 
-  const width = canvasVideoSnapshot.width;
-  const height = canvasVideoSnapshot.height;
+  // Bước 2: Chuẩn bị 100 điểm mốc của nét chữ mẫu (Template Waypoints)
+  let rawWaypoints: Array<{ x: number; y: number }> = [];
 
-  // 2. Trích xuất đường xương sống chữ mẫu
-  const templatePoints = extractTemplateCenterlinePoints(characterTemplate, width, height);
-  if (templatePoints.length === 0) {
-    throw new Error('Không thể khởi tạo đường nét mẫu chuẩn');
+  if (Array.isArray(templatePoints) && templatePoints.length > 0 && typeof (templatePoints[0] as any).x === 'number') {
+    rawWaypoints = templatePoints as Array<{ x: number; y: number }>;
+  } else {
+    rawWaypoints = extractTemplateCenterlinePoints(
+      templatePoints as string | StrokePath[],
+      width,
+      height
+    );
   }
 
+  if (rawWaypoints.length === 0) {
+    rawWaypoints = [
+      { x: width * 0.5, y: height * 0.2 },
+      { x: width * 0.5, y: height * 0.8 },
+    ];
+  }
+
+  // Chia nét chữ mẫu thành 100 điểm mốc (Waypoints) trải đều từ điểm bắt đầu đến điểm kết thúc
+  const waypoints100 = sampleTemplateTo100Waypoints(rawWaypoints, 100);
+
+  // Tính Bounding Box & Trọng tâm chữ mẫu
   let tMinX = Infinity, tMaxX = -Infinity, tMinY = Infinity, tMaxY = -Infinity;
   let tSumX = 0, tSumY = 0;
-
-  for (const pt of templatePoints) {
+  for (const pt of waypoints100) {
     if (pt.x < tMinX) tMinX = pt.x;
     if (pt.x > tMaxX) tMaxX = pt.x;
     if (pt.y < tMinY) tMinY = pt.y;
@@ -760,28 +926,15 @@ export function evaluateHandwriting(
     tSumX += pt.x;
     tSumY += pt.y;
   }
-
+  const tCentroidX = tSumX / 100;
+  const tCentroidY = tSumY / 100;
   const tWidth = Math.max(1, tMaxX - tMinX);
   const tHeight = Math.max(1, tMaxY - tMinY);
-  const tCentroidX = tSumX / templatePoints.length;
-  const tCentroidY = tSumY / templatePoints.length;
-  const templateAspectRatio = tHeight / tWidth;
 
-  // 3. Gom tất cả các điểm mực người dùng từ các contour hợp lệ
-  const rawUserInkPoints: Array<{ x: number; y: number }> = [];
-  for (const stroke of strokeCheck.strokes) {
-    for (const pt of stroke.points) {
-      rawUserInkPoints.push(pt);
-    }
-  }
-
-  const userInkPixels = rawUserInkPoints.length;
-
-  // 4. Tự động căn chỉnh Trọng tâm & Scale
+  // Tính Bounding Box & Trọng tâm nét vẽ người dùng
   let uMinX = Infinity, uMaxX = -Infinity, uMinY = Infinity, uMaxY = -Infinity;
   let uSumX = 0, uSumY = 0;
-
-  for (const pt of rawUserInkPoints) {
+  for (const pt of userInkPoints) {
     if (pt.x < uMinX) uMinX = pt.x;
     if (pt.x > uMaxX) uMaxX = pt.x;
     if (pt.y < uMinY) uMinY = pt.y;
@@ -789,232 +942,214 @@ export function evaluateHandwriting(
     uSumX += pt.x;
     uSumY += pt.y;
   }
-
+  const uCentroidX = uSumX / totalInkPoints;
+  const uCentroidY = uSumY / totalInkPoints;
   const uWidth = Math.max(1, uMaxX - uMinX);
   const uHeight = Math.max(1, uMaxY - uMinY);
-  const uCentroidX = uSumX / userInkPixels;
-  const uCentroidY = uSumY / userInkPixels;
-  const userAspectRatio = uHeight / uWidth;
 
-  const maxShiftX = width * 0.28;
-  const maxShiftY = height * 0.28;
+  // Bước 3: Cho phép dung sai góc nghiêng và độ xê dịch nhẹ (±15%)
+  const maxShiftX = width * 0.15;
+  const maxShiftY = height * 0.15;
   const shiftX = Math.max(-maxShiftX, Math.min(maxShiftX, tCentroidX - uCentroidX));
   const shiftY = Math.max(-maxShiftY, Math.min(maxShiftY, tCentroidY - uCentroidY));
 
-  const scaleRatioH = tHeight / uHeight;
-  const scaleRatioW = tWidth / uWidth;
-  const naturalScale = Math.sqrt(scaleRatioH * scaleRatioW);
-  const normScale = Math.max(0.80, Math.min(1.25, naturalScale));
+  const scaleRatio = Math.sqrt((tWidth / uWidth) * (tHeight / uHeight));
+  const normScale = Math.max(0.85, Math.min(1.15, scaleRatio));
 
+  // Tọa độ người dùng sau khi bù trừ dung sai tự nhiên ±15%
   const alignedUserPoints: Array<{ x: number; y: number }> = [];
-  for (const pt of rawUserInkPoints) {
+  for (let i = 0; i < totalInkPoints; i++) {
+    const pt = userInkPoints[i];
     alignedUserPoints.push({
       x: (uCentroidX + shiftX) + (pt.x - uCentroidX) * normScale,
       y: (uCentroidY + shiftY) + (pt.y - uCentroidY) * normScale,
     });
   }
 
-  // 5. Chamfer Distance Transform với Spatial Grid
-  const toleranceR = options?.tolerancePx || Math.max(25, Math.min(35, Math.round(width * 0.08)));
-  const doubleR = toleranceR * 2.0;
-
+  // Xây dựng Spatial Hash Grid cho nét mực người dùng để tăng tốc tra cứu O(1)
   const cellSize = toleranceR;
-  const gridCols = Math.ceil(width / cellSize) + 2;
-  const spatialGrid: Map<number, Array<{ x: number; y: number; index: number }>> = new Map();
+  const gridCols = Math.ceil(width / cellSize) + 4;
+  const spatialGrid = new Map<number, Array<{ x: number; y: number }>>();
 
-  for (let i = 0; i < templatePoints.length; i++) {
-    const tp = templatePoints[i];
-    const key = Math.floor(tp.y / cellSize) * gridCols + Math.floor(tp.x / cellSize);
-    if (!spatialGrid.has(key)) spatialGrid.set(key, []);
-    spatialGrid.get(key)!.push({ x: tp.x, y: tp.y, index: i });
+  for (let i = 0; i < alignedUserPoints.length; i++) {
+    const pt = alignedUserPoints[i];
+    const col = Math.floor(pt.x / cellSize);
+    const row = Math.floor(pt.y / cellSize);
+    const key = row * gridCols + col;
+    let bucket = spatialGrid.get(key);
+    if (!bucket) {
+      bucket = [];
+      spatialGrid.set(key, bucket);
+    }
+    bucket.push(pt);
   }
 
-  function getMinDistance(px: number, py: number): { dist: number; nearestIdx: number } {
-    let minDist = Infinity;
-    let nearestIdx = 0;
-    const cX = Math.floor(px / cellSize);
-    const cY = Math.floor(py / cellSize);
+  // TÍNH ĐIỂM DỰA TRÊN TỶ LỆ NÉT MẪU ĐƯỢC ĐỒ TRÚNG (Coverage of Template):
+  // Với mỗi điểm mốc của mẫu, kiểm tra xem có nét mực người dùng trong bán kính R (toleranceR) hay không
+  const rSq = toleranceR * toleranceR;
+  let hitCount = 0;
+  const waypointHitFlags = new Uint8Array(100);
 
-    for (let dy = -2; dy <= 2; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        const cell = spatialGrid.get((cY + dy) * gridCols + (cX + dx));
-        if (cell) {
-          for (let k = 0; k < cell.length; k++) {
-            const tp = cell[k];
-            const distSq = (px - tp.x) * (px - tp.x) + (py - tp.y) * (py - tp.y);
-            if (distSq < minDist) {
-              minDist = distSq;
-              nearestIdx = tp.index;
+  for (let i = 0; i < 100; i++) {
+    const wp = waypoints100[i];
+    const wpCol = Math.floor(wp.x / cellSize);
+    const wpRow = Math.floor(wp.y / cellSize);
+
+    let isHit = false;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const key = (wpRow + dy) * gridCols + (wpCol + dx);
+        const bucket = spatialGrid.get(key);
+        if (bucket) {
+          for (let k = 0; k < bucket.length; k++) {
+            const up = bucket[k];
+            const distSq = (wp.x - up.x) * (wp.x - up.x) + (wp.y - up.y) * (wp.y - up.y);
+            if (distSq <= rSq) {
+              isHit = true;
+              break;
             }
           }
         }
+        if (isHit) break;
       }
+      if (isHit) break;
     }
-    return { dist: Math.sqrt(minDist), nearestIdx };
+
+    if (isHit) {
+      waypointHitFlags[i] = 1;
+      hitCount++;
+    }
   }
 
-  const totalInkPoints = alignedUserPoints.length;
-  let pointsInSafeZone = 0;
-  let sumTrajectoryScore = 0;
+  // Điểm bám nét cơ bản (Base Score) = (Hit_Count / 100) * 100
+  const baseScore = Math.round((hitCount / 100) * 100);
+
+  // Chỉ trừ điểm phạt khi phát hiện có nét vẽ nguệch ngoạc nằm văng hẳn ra ngoài khung ô ly cho phép
+  // Bán kính vùng an toàn mở rộng: R_OUT = toleranceR * 2.5 (~ 70px)
+  const rOutSq = (toleranceR * 2.5) * (toleranceR * 2.5);
   let outOfBoundsCount = 0;
-  const templateCoveredFlags = new Uint8Array(templatePoints.length);
 
-  for (let i = 0; i < totalInkPoints; i++) {
-    const pt = alignedUserPoints[i];
-    const { dist, nearestIdx } = getMinDistance(pt.x, pt.y);
-
-    if (dist <= toleranceR) {
-      pointsInSafeZone++;
-      sumTrajectoryScore += 1.0;
-      templateCoveredFlags[nearestIdx] = 1;
-    } else if (dist <= doubleR) {
-      const decayScore = 1.0 - (dist - toleranceR) / toleranceR;
-      sumTrajectoryScore += Math.max(0, decayScore);
-      templateCoveredFlags[nearestIdx] = 1;
-    } else {
+  for (let i = 0; i < alignedUserPoints.length; i++) {
+    const up = alignedUserPoints[i];
+    let minWpDistSq = Infinity;
+    for (let j = 0; j < 100; j++) {
+      const wp = waypoints100[j];
+      const dSq = (up.x - wp.x) * (up.x - wp.x) + (up.y - wp.y) * (up.y - wp.y);
+      if (dSq < minWpDistSq) {
+        minWpDistSq = dSq;
+        if (minWpDistSq <= rOutSq) break; // Nằm trong vùng an toàn ô ly cho phép
+      }
+    }
+    if (minWpDistSq > rOutSq) {
       outOfBoundsCount++;
     }
   }
 
-  // 6. Centerline Coverage
-  let coveredCheckpointCount = 0;
-  for (let i = 0; i < templatePoints.length; i++) {
-    if (templateCoveredFlags[i] === 1) coveredCheckpointCount++;
-  }
-  const rawCoverage = templatePoints.length > 0 ? (coveredCheckpointCount / templatePoints.length) : 0;
-  const centerlineCoverage = Math.min(1.0, rawCoverage * 1.15);
-
-  // 7. Điểm cân đối ô ly (Proportion & Height - 20%)
-  const aspectDiff = Math.abs(userAspectRatio - templateAspectRatio) / Math.max(0.1, templateAspectRatio);
-  const heightDiff = Math.abs(uHeight - tHeight) / Math.max(1, tHeight);
-  let proportionScore = 20;
-
-  if (aspectDiff <= 0.25 && heightDiff <= 0.30) {
-    proportionScore = 20;
-  } else {
-    const overDiff = Math.max(aspectDiff - 0.25, heightDiff - 0.30);
-    proportionScore = Math.max(4, Math.round(20 * (1 - Math.min(0.8, overDiff * 1.2))));
-  }
-
-  // 8. Điểm Trajectory & Completeness
-  const trajectoryScore = (totalInkPoints > 0 ? (sumTrajectoryScore / totalInkPoints) : 0) * 50;
-  const completenessScore = centerlineCoverage * 30;
-
-  let rawFinal = trajectoryScore + completenessScore + proportionScore;
-
-  // Phạt mực lệch ô ly
-  const outRatio = totalInkPoints > 0 ? (outOfBoundsCount / totalInkPoints) : 0;
+  const outOfBoundsRatio = alignedUserPoints.length > 0 ? (outOfBoundsCount / alignedUserPoints.length) : 0;
   let penalty = 0;
-  if (outRatio > 0.15) {
-    penalty = Math.min(35, Math.round((outRatio - 0.15) * 45));
-    rawFinal -= penalty;
+  // Chỉ trừ điểm khi có nét vẽ nguệch ngoạc văng hẳn ra ngoài (> 15% tổng số nét vẽ)
+  if (outOfBoundsRatio > 0.15) {
+    penalty = Math.min(25, Math.round((outOfBoundsRatio - 0.15) * 35));
   }
 
-  // YÊU CẦU BẮT BUỘC: Nếu phát hiện nét chữ nhưng sai hoàn toàn so với chữ mẫu:
-  // Tổng điểm phải < 40 điểm, thông báo rõ nét viết chưa đúng mẫu chữ yêu cầu.
-  const safeRatio = totalInkPoints > 0 ? (pointsInSafeZone / totalInkPoints) : 0;
-  const isWrongLetter = safeRatio < 0.40 || centerlineCoverage < 0.35;
+  // Điểm tổng hợp cuối cùng
+  const finalScore = Math.max(0, Math.min(100, Math.round(baseScore - penalty)));
 
-  if (isWrongLetter) {
-    // Ép điểm xuống dưới 40 điểm theo đúng quy định
-    rawFinal = Math.min(35, Math.round(safeRatio * 70));
-    if (safeRatio < 0.22) {
-      rawFinal = Math.min(22, rawFinal);
-    }
-  }
-
-  const finalCalculatedScore = Math.max(12, Math.min(98, Math.round(rawFinal)));
-
+  // BẢNG PHÂN LOẠI KẾT QUẢ RÕ RÀNG:
+  // - Từ 85 - 100 điểm: "Xuất sắc! Nét chữ đúng chuẩn".
+  // - Từ 65 - 84 điểm: "Khá tốt! Cần nắn nót thêm đường cong/độ cao".
+  // - Dưới 65 điểm: "Chưa đúng mẫu! Hãy xem lại hướng đi của nét".
+  let grade = "";
   let status: 'PASS' | 'NEEDS_IMPROVEMENT' | 'FAIL' = 'PASS';
   let warningText: string | undefined = undefined;
 
-  if (finalCalculatedScore < 40 || isWrongLetter) {
-    status = 'FAIL';
-    warningText = '⚠️ Nét viết chưa đúng mẫu chữ yêu cầu! Bé hãy quan sát nét mẫu màu hồng và viết lại cẩn thận nhé.';
-  } else if (finalCalculatedScore < 65 || centerlineCoverage < 0.50) {
-    status = 'NEEDS_IMPROVEMENT';
-    warningText = 'Nét chữ còn thiếu nét hoặc hơi chệch ô ly. Bé nhớ viết liền mạch từ điểm đặt bút đến điểm dừng bút nhé.';
-  } else if (finalCalculatedScore >= 80) {
+  if (finalScore >= 85) {
+    grade = "Xuất sắc! Nét chữ đúng chuẩn";
     status = 'PASS';
-  } else {
+  } else if (finalScore >= 65) {
+    grade = "Khá tốt! Cần nắn nót thêm đường cong/độ cao";
     status = 'NEEDS_IMPROVEMENT';
+    warningText = "Khá tốt! Cần nắn nót thêm đường cong/độ cao.";
+  } else {
+    grade = "Chưa đúng mẫu! Hãy xem lại hướng đi của nét";
+    status = 'FAIL';
+    warningText = "Chưa đúng mẫu! Hãy xem lại hướng đi của nét và đồ chậm lại theo nét mẫu nhé.";
   }
 
-  console.log({
-    totalInkPoints,
-    pointsInSafeZone,
-    centerlineCoverage: parseFloat(centerlineCoverage.toFixed(3)),
-    finalCalculatedScore,
-    trajectoryScore: Math.round(trajectoryScore),
-    completenessScore: Math.round(completenessScore),
-    proportionScore,
-    safeRatio: parseFloat(safeRatio.toFixed(3)),
-    isWrongLetter,
-    status
-  });
+  // Các điểm thành phần trực quan
+  const trajectoryScore = Math.round((hitCount / 100) * 50);
+  const completenessScore = Math.round((hitCount / 100) * 30);
+  const proportionScore = Math.max(0, 20 - penalty);
+  const inTemplatePixels = alignedUserPoints.length - outOfBoundsCount;
 
-  // Tạo debug overlay canvas
-  const debugCanvas = document.createElement('canvas');
-  debugCanvas.width = width;
-  debugCanvas.height = height;
-  const dbgCtx = debugCanvas.getContext('2d');
+  // Tạo Debug Overlay Canvas trực quan
+  let debugOverlayUrl: string | undefined = undefined;
+  if (typeof document !== 'undefined') {
+    try {
+      const debugCanvas = document.createElement('canvas');
+      debugCanvas.width = width;
+      debugCanvas.height = height;
+      const dbgCtx = debugCanvas.getContext('2d');
+      if (dbgCtx) {
+        dbgCtx.fillStyle = 'rgba(15, 23, 42, 0.45)';
+        dbgCtx.fillRect(0, 0, width, height);
 
-  if (dbgCtx) {
-    dbgCtx.fillStyle = 'rgba(15, 23, 42, 0.40)';
-    dbgCtx.fillRect(0, 0, width, height);
+        // Vẽ 100 waypoints mẫu: Xanh lá nếu Trúng (Hit), Đỏ hồng nếu Chưa trúng
+        for (let i = 0; i < 100; i++) {
+          const wp = waypoints100[i];
+          const isHit = waypointHitFlags[i] === 1;
 
-    // Vẽ nét mẫu màu hồng
-    dbgCtx.strokeStyle = 'rgba(244, 63, 94, 0.65)';
-    dbgCtx.lineWidth = 6;
-    dbgCtx.lineCap = 'round';
-    dbgCtx.lineJoin = 'round';
-    for (let i = 1; i < templatePoints.length; i++) {
-      const p1 = templatePoints[i - 1];
-      const p2 = templatePoints[i];
-      if (p1.strokeId === p2.strokeId || !p1.strokeId) {
-        dbgCtx.beginPath();
-        dbgCtx.moveTo(p1.x, p1.y);
-        dbgCtx.lineTo(p2.x, p2.y);
-        dbgCtx.stroke();
+          // Vùng đệm dung sai bán kính R
+          dbgCtx.beginPath();
+          dbgCtx.arc(wp.x, wp.y, toleranceR, 0, Math.PI * 2);
+          dbgCtx.fillStyle = isHit ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.08)';
+          dbgCtx.fill();
+
+          // Điểm mốc chính
+          dbgCtx.beginPath();
+          dbgCtx.arc(wp.x, wp.y, 3, 0, Math.PI * 2);
+          dbgCtx.fillStyle = isHit ? '#10b981' : '#f43f5e';
+          dbgCtx.fill();
+        }
+
+        // Vẽ các nét mực người dùng
+        for (let i = 0; i < alignedUserPoints.length; i += 2) {
+          const pt = alignedUserPoints[i];
+          dbgCtx.fillStyle = 'rgba(56, 189, 248, 0.75)';
+          dbgCtx.fillRect(Math.round(pt.x), Math.round(pt.y), 2, 2);
+        }
+
+        debugOverlayUrl = debugCanvas.toDataURL('image/png');
       }
-    }
-
-    // Vẽ nét người dùng phân màu
-    for (let i = 0; i < totalInkPoints; i += 2) {
-      const pt = alignedUserPoints[i];
-      const { dist } = getMinDistance(pt.x, pt.y);
-
-      if (dist <= toleranceR) {
-        dbgCtx.fillStyle = 'rgba(16, 185, 129, 0.85)';
-      } else if (dist <= doubleR) {
-        dbgCtx.fillStyle = 'rgba(245, 158, 11, 0.85)';
-      } else {
-        dbgCtx.fillStyle = 'rgba(239, 68, 68, 0.90)';
-      }
-      dbgCtx.fillRect(Math.round(pt.x), Math.round(pt.y), 2, 2);
+    } catch {
+      // ignore
     }
   }
 
   return {
     hasInk: true,
     hasStrokes: true,
-    finalScore: finalCalculatedScore,
-    finalCalculatedScore,
-    trajectoryScore: Math.round(trajectoryScore),
-    completenessScore: Math.round(completenessScore),
+    finalScore,
+    finalCalculatedScore: finalScore,
+    baseScore,
+    hitCount,
+    totalWaypoints: 100,
+    trajectoryScore,
+    completenessScore,
     proportionScore,
     penalty,
-    precision: safeRatio,
-    recall: centerlineCoverage,
+    precision: alignedUserPoints.length > 0 ? (inTemplatePixels / alignedUserPoints.length) : 0,
+    recall: hitCount / 100,
     totalInkPoints,
-    pointsInSafeZone,
-    centerlineCoverage,
-    userInkPixels,
-    inTemplatePixels: pointsInSafeZone,
+    pointsInSafeZone: inTemplatePixels,
+    centerlineCoverage: hitCount / 100,
+    userInkPixels: totalInkPoints,
+    inTemplatePixels,
     outOfBoundsPixels: outOfBoundsCount,
     status,
+    grade,
     warningText,
-    debugOverlayUrl: debugCanvas.toDataURL('image/png'),
+    debugOverlayUrl,
   };
 }
 
@@ -1024,6 +1159,7 @@ export function evaluateHandwriting(
 export const evaluateAgainstTemplate = evaluateHandwriting;
 export const evaluateDrawingOnPaper = evaluateHandwriting;
 export const computeStrokeScore = evaluateHandwriting;
+export const analyzeImageDataForInk = extractHandwritingStrokes;
 
 /**
  * Hàm bao tương thích ngược (Không gán điểm ảo)

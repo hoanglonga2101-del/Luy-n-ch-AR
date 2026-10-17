@@ -239,16 +239,14 @@ function computeRealisticScoreFromMetrics(
     const precisionVal = metrics.precision ?? (overall / 100);
     const warning = metrics.warningText;
 
-    let gradeText = "Khá - Nét chữ đều và sáng";
-    if (overall >= 88) gradeText = "Xuất sắc - Nét chữ chuẩn nét mẫu ⭐";
-    else if (overall >= 75) gradeText = "Khá tốt - Nét chữ thanh thoát, đúng quy tắc";
-    else if (overall >= 50) gradeText = "Trung bình - Cần nắn lại tỷ lệ ô ly";
-    else gradeText = "Lệch nét / Viết sai mẫu - Cần rèn luyện lại";
+    let gradeText = "Khá tốt! Cần nắn nót thêm đường cong/độ cao";
+    if (overall >= 85) gradeText = "Xuất sắc! Nét chữ đúng chuẩn";
+    else if (overall < 65) gradeText = "Chưa đúng mẫu! Hãy xem lại hướng đi của nét";
 
     const strictEvaluation = {
       target_character: targetChar,
       stroke_index: strokeIndex,
-      status: metrics.status || (overall >= 65 ? ("PASS" as const) : ("RETRY" as const)),
+      status: metrics.status || (overall >= 85 ? ("PASS" as const) : (overall >= 65 ? ("NEEDS_IMPROVEMENT" as any) : ("FAIL" as const))),
       metrics: {
         overall_score: overall,
         trajectory_score: trajectory,
@@ -259,13 +257,13 @@ function computeRealisticScoreFromMetrics(
       detected_errors: warning ? [
         {
           error_type: "LECH_NET_SAI_MAU" as const,
-          severity: "HIGH" as const,
+          severity: overall < 65 ? ("HIGH" as const) : ("LOW" as const),
           instruction: warning,
         }
       ] : [],
       learning_path_recommendation: {
-        focus_area: overall < 50 ? "Quỹ đạo bám nét mẫu" : "Nét móc ngược & Độ nghiêng tự nhiên",
-        suggested_next_exercise: overall < 50
+        focus_area: overall < 65 ? "Quỹ đạo bám nét mẫu" : "Nét móc ngược & Độ nghiêng tự nhiên",
+        suggested_next_exercise: overall < 65
           ? "Đồ lại theo nét chữ mẫu màu hồng để quen tay trước khi viết độc lập"
           : "Luyện 3 dòng nét mẫu để tay quen với nhịp lia bút đều đặn",
       },
