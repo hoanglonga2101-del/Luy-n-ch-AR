@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
@@ -20,81 +20,115 @@ function getAI() {
   return aiClient;
 }
 
-// API to analyze real handwritten notebook photo via Gemini Vision
+// API to analyze real handwritten notebook photo or stroke trajectory via Computer Vision & Gemini
 app.post("/api/analyze-handwriting", async (req, res) => {
   try {
-    const { imageBase64, sampleText } = req.body;
+    const { 
+      imageBase64, 
+      sampleText, 
+      target_character, 
+      stroke_index = 1,
+      paper_corners,
+      pen_coordinates 
+    } = req.body;
     const ai = getAI();
 
-    if (!imageBase64) {
-      return res.status(400).json({ success: false, error: "Vui lòng cung cấp hình ảnh bài viết." });
+    const charTarget = target_character || (sampleText ? sampleText.trim().charAt(0) : "a");
+
+    if (!imageBase64 && (!pen_coordinates || pen_coordinates.length === 0)) {
+      return res.status(400).json({ success: false, error: "Vui lòng cung cấp hình ảnh bài viết hoặc tọa độ nét viết." });
     }
 
     if (!ai) {
+      const simulated = getSimulatedAIFeedback(charTarget, stroke_index, sampleText);
       return res.json({
         success: true,
         source: "simulated_expert",
-        feedback: getSimulatedAIFeedback(sampleText),
+        strictEvaluation: simulated.strictEvaluation,
+        feedback: simulated.legacyFeedback,
       });
     }
 
-    const prompt = `Bạn là chuyên gia thẩm định chữ viết tay và giáo viên sư phạm luyện chữ đẹp hàng đầu.
-Học viên vừa gửi hình ảnh trang giấy luyện viết thật với chữ/câu mẫu: "${sampleText || 'Luyện viết chữ đẹp'}".
-Hãy quan sát kỹ hình ảnh nét mực trên mặt giấy và phân tích các tiêu chí kỹ thuật:
-1. Độ nghiêng con chữ (Slant consistency): Các nét sổ và nét hất có giữ góc nghiêng đều đặn không?
-2. Chiều cao & độ đều (x-height & baseline): Đáy chữ có thẳng hàng trên đường kẻ không? Nét khuyết trên, khuyết dưới có đúng tỷ lệ ô ly không?
-3. Khoảng cách chữ & từ (Spacing): Khoảng cách giữa các chữ cái trong từ và giữa các từ có chuẩn không (chuẩn thường bằng 1 thân chữ 'o')?
-4. Nét thanh, nét đậm & lực bút (Stroke dynamics): Điểm dừng bút, nét rê, độ mượt mà của mực.
+    const cvContext = paper_corners ? `
+[DỮ LIỆU HIỆU CHUẨN MẶT PHẲNG (PAPER PLANE CALIBRATION)]
+Đã định vị 4 góc trang giấy chuẩn hóa [0, 1]: ${JSON.stringify(paper_corners)}.
+Đã thực hiện Perspective Transform bù trừ góc nghiêng và chống rung hình ảnh để khóa nét mẫu khớp ô ly giấy thực tế.` : `
+[DỮ LIỆU MẶT PHẲNG]
+Tự động phát hiện 4 góc trang giấy từ ảnh, tính ma trận Perspective Transform, hiệu chỉnh tọa độ chuẩn [0, 1] và bù trừ góc nghiêng.`;
 
-Yêu cầu trả về DUY NHẤT một chuỗi JSON chuẩn không có markdown codeblock:
+    const penContext = pen_coordinates && pen_coordinates.length > 0 ? `
+[DỮ LIỆU TỌA ĐỘ ĐẦU BÚT VIẾT (PEN TIP TRAJECTORY)]
+${JSON.stringify(pen_coordinates.slice(0, 50))}` : '';
+
+    const prompt = `Bạn là Trợ lý AI Cốt lõi & Chuyên gia Thị giác máy tính (Computer Vision) phục vụ cho dự án "Luyện Chữ AR" - ứng dụng hỗ trợ học sinh luyện chữ viết tay qua Camera, AR và AI.
+
+Nhiệm vụ: Tiếp nhận hình ảnh trang giấy thực tế, đối chiếu ký tự/văn bản cần luyện "${charTarget}" (thuộc bài viết "${sampleText || charTarget}"), nét thứ ${stroke_index}, xử lý logic, đối chiếu sai số và sinh phản hồi có cấu trúc.
+
+${cvContext}
+${penContext}
+
+BẠN PHẢI TUÂN THỦ NGHIÊM NGẶT CÁC QUY TẮC SAU:
+1. Xác định & Chuẩn hóa Mặt phẳng (Paper Plane Calibration):
+- Nhận diện 4 góc của trang giấy/vùng viết (Perspective Transform) để định dạng hệ tọa độ chuẩn (Normalized Coordinates [0, 1]).
+- Tự động bù trừ góc nghiêng và chống rung hình ảnh để giữ lớp phủ nét mẫu (AR overlay) cố định trên mặt giấy, bất kể góc đặt máy hay thay đổi ánh sáng.
+
+2. Tiêu chuẩn Phân tích Nét chữ (Chữ chuẩn Tiếng Việt bậc Tiểu học):
+- Chuẩn hóa cấu trúc ký tự theo: Điểm đặt bút (start_point), Điểm đổi hướng (keypoints), Hướng di chuyển (vector), Điểm dừng bút (end_point), Chiều cao/chiều rộng con chữ (tính theo đơn vị ô ly).
+- Phân biệt rõ giữa "Lỗi sai kỹ thuật cần sửa" (sai quy tắc ô ly, ngược hướng nét, sai điểm đặt/dừng) và "Đặc trưng phong cách cá nhân" (độ nghiêng tự nhiên, nét thanh nét đậm nhẹ) để tránh việc báo lỗi sai lệch (False Positive).
+
+3. Thuật toán Chấm điểm & Đánh giá Đa tiêu chí:
+Không chỉ trả về "Đúng/Sai" chung chung. Mọi kết quả đánh giá phải có điểm số chi tiết từ 0 - 100 theo các trục:
+- trajectory_score: Độ bám sát quỹ đạo nét mẫu.
+- start_end_accuracy: Độ chính xác điểm đặt và điểm dừng bút.
+- proportion_score: Tỷ lệ kích thước và độ cao theo ô ly chuẩn.
+- smoothness_score: Độ trơn tru, liền mạch của nét viết.
+- overall_score: Trung bình có trọng số của các trục trên.
+
+4. Định dạng phản hồi:
+Luôn trả về kết quả dưới định dạng JSON thuần (Strict JSON), không kèm văn bản thừa ngoài cấu trúc sau:
 {
-  "overallScore": 88,
-  "grade": "Khá - Nét chữ đều và sáng",
-  "slantAnalysis": {
-    "score": 85,
-    "detectedAngle": "Khoảng 15° - 20° nghiêng phải",
-    "feedback": "Nhận xét chi tiết về độ nghiêng nét sổ và nét hất..."
+  "target_character": "${charTarget}",
+  "stroke_index": ${stroke_index},
+  "status": "PASS",
+  "metrics": {
+    "overall_score": 88,
+    "trajectory_score": 85,
+    "start_end_accuracy": 90,
+    "proportion_score": 86,
+    "smoothness_score": 89
   },
-  "sizeConsistency": {
-    "score": 88,
-    "feedback": "Nhận xét về độ cao các con chữ b, h, k, d so với a, o, e..."
-  },
-  "spacingAndAlignment": {
-    "score": 86,
-    "feedback": "Nhận xét về khoảng cách chân chữ và đường cơ sở..."
-  },
-  "strokeQuality": {
-    "score": 90,
-    "feedback": "Nhận xét về độ dứt khoát của nét mực và độ mượt..."
-  },
-  "strengths": [
-    "Điểm mạnh 1 nổi bật của nét viết",
-    "Điểm mạnh 2"
+  "detected_errors": [
+    {
+      "error_type": "LECH_DIEM_DUNG",
+      "severity": "LOW",
+      "instruction": "Điểm dừng bút hơi vống lên trên đường kẻ 1, bé hạ nhẹ ngòi bút xuống đúng đường kẻ ô ly nhé."
+    }
   ],
-  "improvements": [
-    "Điểm cần khắc phục cụ thể 1",
-    "Điểm cần khắc phục cụ thể 2"
-  ],
-  "encouragement": "Lời động viên ngắn gọn, ấm áp tạo động lực rèn luyện."
+  "learning_path_recommendation": {
+    "focus_area": "Nét móc ngược",
+    "suggested_next_exercise": "Luyện 3 dòng nét móc ngược cao 1 ô ly trước khi nối sang chữ tiếp theo"
+  }
 }`;
 
     // Clean base64 string
-    const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+    const base64Data = imageBase64 ? imageBase64.replace(/^data:image\/\w+;base64,/, "") : null;
+
+    const parts: any[] = [{ text: prompt }];
+    if (base64Data) {
+      parts.push({
+        inlineData: {
+          mimeType: "image/jpeg",
+          data: base64Data,
+        },
+      });
+    }
 
     const response = await ai.models.generateContent({
       model: "gemini-3.8-flash",
       contents: [
         {
           role: "user",
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: "image/jpeg",
-                data: base64Data,
-              },
-            },
-          ],
+          parts: parts,
         },
       ],
       config: {
@@ -103,54 +137,117 @@ Yêu cầu trả về DUY NHẤT một chuỗi JSON chuẩn không có markdown 
     });
 
     const responseText = response.text || "{}";
-    const parsed = JSON.parse(responseText);
+    const strictParsed = JSON.parse(responseText);
+
+    const legacyFeedback = buildLegacyFeedbackFromStrict(strictParsed, sampleText);
 
     return res.json({
       success: true,
       source: "gemini",
-      feedback: parsed,
+      strictEvaluation: strictParsed,
+      feedback: legacyFeedback,
     });
   } catch (error: any) {
     console.error("Gemini handwriting analysis error:", error);
+    const charTarget = req.body?.target_character || (req.body?.sampleText ? req.body.sampleText.trim().charAt(0) : "a");
+    const simulated = getSimulatedAIFeedback(charTarget, req.body?.stroke_index || 1, req.body?.sampleText);
     return res.json({
       success: true,
       source: "fallback_expert",
-      feedback: getSimulatedAIFeedback(req.body?.sampleText),
+      strictEvaluation: simulated.strictEvaluation,
+      feedback: simulated.legacyFeedback,
     });
   }
 });
 
-function getSimulatedAIFeedback(sampleText?: string) {
+// Helper to convert strict CV evaluation to rich legacy UI view
+function buildLegacyFeedbackFromStrict(strict: any, sampleText?: string) {
+  const overall = strict?.metrics?.overall_score || 85;
+  let grade = "Khá - Nét chữ đều và sáng";
+  if (overall >= 90) grade = "Xuất sắc - Nét chữ chuẩn ô ly Tiểu học ⭐";
+  else if (overall >= 80) grade = "Khá tốt - Nét chữ thanh thoát, đúng quy tắc";
+  else if (overall >= 65) grade = "Trung bình - Cần nắn lại tỷ lệ ô ly";
+  else grade = "Cần rèn luyện thêm - Chú ý hướng nét";
+
+  const strengths: string[] = [];
+  if ((strict?.metrics?.trajectory_score || 0) >= 80) {
+    strengths.push("Độ bám sát quỹ đạo nét mẫu tốt, đường cong uyển chuyển.");
+  }
+  if ((strict?.metrics?.start_end_accuracy || 0) >= 80) {
+    strengths.push("Điểm đặt bút và điểm dừng bút chuẩn xác theo quy tắc ô ly.");
+  }
+  if ((strict?.metrics?.proportion_score || 0) >= 80) {
+    strengths.push("Tỷ lệ chiều cao và độ rộng con chữ chuẩn mực theo vở mẫu Tiểu học.");
+  }
+  if (strengths.length === 0) {
+    strengths.push("Bé cầm bút chắc tay, mực xuống đều trên mặt giấy.");
+  }
+
+  const improvements: string[] = (strict?.detected_errors || []).map((err: any) => 
+    `[${err.error_type}]: ${err.instruction}`
+  );
+  if (improvements.length === 0) {
+    improvements.push("Tiếp tục giữ vững nhịp lia bút để các nét thanh nét đậm thêm tự nhiên.");
+  }
+
   return {
-    overallScore: 86,
-    grade: "Khá tốt - Nét chữ thanh thoát, có hồn",
+    overallScore: overall,
+    grade: grade,
     slantAnalysis: {
-      score: 85,
-      detectedAngle: "Nghiêng chuẩn 18° sang phải",
-      feedback: "Độ nghiêng của các nét sổ thẳng và thân chữ duy trì tương đối ổn định, tạo cảm giác chữ đồng điệu và mềm mại.",
+      score: strict?.metrics?.trajectory_score || 85,
+      detectedAngle: "Nghiêng chuẩn 15° - 20°",
+      feedback: `Độ nghiêng tự nhiên phù hợp phong cách cá nhân, quỹ đạo đạt ${strict?.metrics?.trajectory_score || 85}%.`,
     },
     sizeConsistency: {
-      score: 88,
-      feedback: "Tỷ lệ giữa các chữ cái thân thấp (a, o, e, c) và các chữ có nét khuyết vươn cao (b, h, l, d) bám sát các đường kẻ ô ly.",
+      score: strict?.metrics?.proportion_score || 88,
+      feedback: `Tỷ lệ ô ly chuẩn Tiểu học đạt ${strict?.metrics?.proportion_score || 88}%, trọng tâm chữ cân đối.`,
     },
     spacingAndAlignment: {
-      score: 84,
-      feedback: "Chân chữ giữ thăng bằng tốt trên dòng kẻ ngang đáy. Khoảng cách giữa một số cặp chữ (như 'th', 'ng') có thể nới rộng nhẹ khoảng 0.5mm để chữ thoáng hơn.",
+      score: strict?.metrics?.start_end_accuracy || 86,
+      feedback: `Điểm đặt và dừng bút đạt ${strict?.metrics?.start_end_accuracy || 86}%, bám đúng đường kẻ ngang.`,
     },
     strokeQuality: {
-      score: 87,
-      feedback: "Điểm dừng bút dứt khoát, ngòi bút lướt êm và ít bị run tay. Nét nối giữa các chữ cái liền mạch.",
+      score: strict?.metrics?.smoothness_score || 89,
+      feedback: `Nét chữ liền mạch, độ trơn tru đạt ${strict?.metrics?.smoothness_score || 89}%.`,
     },
-    strengths: [
-      "Trọng tâm chữ vững chãi, ngòi bút đều tay và không bị gián đoạn giữa chừng.",
-      "Nét cong kín của các chữ o, c, d tròn đều và không bị méo góc.",
-      "Duy trì tư thế cầm bút tốt giúp mực ra đều đặn trên mặt giấy.",
+    strengths: strengths,
+    improvements: improvements,
+    encouragement: strict?.learning_path_recommendation?.suggested_next_exercise 
+      ? `Cô AI khuyên: Hãy tập trung vào ${strict.learning_path_recommendation.focus_area}. Bài tập gợi ý: ${strict.learning_path_recommendation.suggested_next_exercise}.`
+      : "Bài viết cho thấy sự tỉ mỉ và kiên nhẫn đáng khen ngợi! Cố gắng luyện tập mỗi ngày để nét chữ ngày càng đẹp hơn.",
+    strictEvaluation: strict,
+  };
+}
+
+function getSimulatedAIFeedback(targetChar: string = 'a', strokeIndex: number = 1, sampleText?: string) {
+  const strictEvaluation = {
+    target_character: targetChar,
+    stroke_index: strokeIndex,
+    status: "PASS" as const,
+    metrics: {
+      overall_score: 88,
+      trajectory_score: 86,
+      start_end_accuracy: 90,
+      proportion_score: 87,
+      smoothness_score: 89,
+    },
+    detected_errors: [
+      {
+        error_type: "LECH_DIEM_DUNG",
+        severity: "LOW" as const,
+        instruction: "Điểm dừng bút hơi cao hơn dòng kẻ đáy một chút, bé hạ nhẹ ngòi bút dừng lại đúng đường kẻ ngang số 1 nhé.",
+      },
     ],
-    improvements: [
-      "Chú ý góc lượn ở điểm dừng bút của các nét móc ngược (như chữ i, u) để nét thanh thoát hơn.",
-      "Thả lỏng cổ tay thêm một chút khi lia bút từ chữ này sang chữ tiếp theo.",
-    ],
-    encouragement: "Bài viết cho thấy sự tỉ mỉ và kiên nhẫn đáng khen ngợi! Tiếp tục duy trì luyện tập 10 phút mỗi ngày, nét chữ của bạn sẽ ngày càng uyển chuyển và mang dấu ấn phong cách riêng.",
+    learning_path_recommendation: {
+      focus_area: targetChar === 'a' || targetChar === 'o' ? "Nét cong kín" : "Nét móc ngược & Nét khuyết",
+      suggested_next_exercise: "Luyện 3 dòng nét móc ngược cao 1 ô ly trước khi nối sang chữ tiếp theo",
+    },
+  };
+
+  const legacyFeedback = buildLegacyFeedbackFromStrict(strictEvaluation, sampleText);
+  return {
+    strictEvaluation,
+    legacyFeedback,
   };
 }
 

@@ -22,6 +22,34 @@ export interface WorksheetConfig {
   slantAngle: number; // e.g. 55 or 75
 }
 
+export interface DetectedStrokeError {
+  error_type: string; // e.g., 'SAI_HUONG_NET' | 'NHO_SO_VOI_O_LI' | 'LECH_DIEM_DUNG'
+  severity: 'LOW' | 'MEDIUM' | 'HIGH';
+  instruction: string;
+}
+
+export interface LearningPathRecommendation {
+  focus_area: string; // e.g., 'Nét cong kín', 'Nét khuyết trên'
+  suggested_next_exercise: string;
+}
+
+export interface StrictEvaluationMetrics {
+  overall_score: number;
+  trajectory_score: number;
+  start_end_accuracy: number;
+  proportion_score: number;
+  smoothness_score?: number;
+}
+
+export interface StrictHandwritingEvaluation {
+  target_character: string;
+  stroke_index: number;
+  status: 'PASS' | 'NEEDS_IMPROVEMENT' | 'FAIL';
+  metrics: StrictEvaluationMetrics;
+  detected_errors: DetectedStrokeError[];
+  learning_path_recommendation: LearningPathRecommendation;
+}
+
 export interface AIFeedbackResult {
   overallScore: number; // 0 - 100
   grade: string; // e.g. "Rất tốt (Xuất sắc)", "Khá", "Cần rèn thêm"
@@ -45,6 +73,7 @@ export interface AIFeedbackResult {
   strengths: string[];
   improvements: string[];
   encouragement: string;
+  strictEvaluation?: StrictHandwritingEvaluation;
 }
 
 export interface StrokePath {
@@ -130,6 +159,7 @@ export interface HandwritingFeedback {
   strengths: string[];
   improvements: string[];
   encouragement?: string;
+  strictEvaluation?: StrictHandwritingEvaluation;
 }
 
 // Gamification & Ranking Types

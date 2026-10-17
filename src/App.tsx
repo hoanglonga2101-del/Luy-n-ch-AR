@@ -42,6 +42,9 @@ import {
 import {
   AgeAndProfileModal
 } from './components/AgeAndProfileModal';
+import {
+  ValidationMatrixModal
+} from './components/ValidationMatrixModal';
 import { 
   LanguageCode, 
   DeviceMode,
@@ -58,6 +61,7 @@ export default function App() {
   const [currentLanguage, setCurrentLanguage] = useState<LanguageCode>('vi');
   const [activeView, setActiveView] = useState<AppViewMode>('worksheet');
   const [isEyeTimerOpen, setIsEyeTimerOpen] = useState<boolean>(false);
+  const [isValidationModalOpen, setIsValidationModalOpen] = useState<boolean>(false);
   const [profile, setProfile] = useState<UserLearnerProfile>(getStoredProfile);
   
   // First-time Age & Profile onboarding check
@@ -255,6 +259,7 @@ export default function App() {
         onSelectDeviceMode={setDeviceMode}
         onOpenEyeTimer={() => setIsEyeTimerOpen(true)}
         onOpenProfileModal={() => setIsProfileModalOpen(true)}
+        onOpenValidationModal={() => setIsValidationModalOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -271,6 +276,17 @@ export default function App() {
                   <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs sm:text-sm font-bold">
                     <span>✨</span> Bé Vui Luyện Chữ Đẹp & Đúng Chuẩn
                   </div>
+
+                  {/* Validation Matrix for Judges */}
+                  <button
+                    id="hero-validation-matrix-btn"
+                    onClick={() => setIsValidationModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-indigo-500/20 via-purple-500/20 to-indigo-500/20 hover:from-indigo-500/30 hover:to-purple-500/30 border border-indigo-500/40 text-indigo-300 text-xs sm:text-sm font-bold transition cursor-pointer active:scale-95 shadow-sm"
+                    title="Xem Ma trận Đánh giá Thực nghiệm & Báo cáo Ban Giám khảo"
+                  >
+                    <span>📊</span>
+                    <span>Báo Cáo Thực Nghiệm (Ban Giám Khảo)</span>
+                  </button>
 
                   {/* Personalized Learner Profile Tag */}
                   <button
@@ -562,6 +578,12 @@ export default function App() {
         onProfileUpdated={(updated) => setProfile(updated)}
         onNavigateToView={(view) => setActiveView(view)}
         isFirstTime={!profile.hasCompletedOnboarding}
+      />
+
+      {/* Experimental Validation Matrix & Benchmark Modal for Judging Panel (BGK) */}
+      <ValidationMatrixModal
+        isOpen={isValidationModalOpen}
+        onClose={() => setIsValidationModalOpen(false)}
       />
     </div>
   );

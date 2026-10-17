@@ -163,6 +163,37 @@ export function playFanfareSound() {
   }
 }
 
+// Low-frequency gentle warning buzz for real-time stroke deviation
+let lastAlertSoundTime = 0;
+export function playDeviationAlertSound() {
+  const now = Date.now();
+  if (now - lastAlertSoundTime < 350) return; // Tránh dồn dập nhiều âm trong 1 frame
+  lastAlertSoundTime = now;
+
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(260, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.12);
+
+    gain.gain.setValueAtTime(0.06, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+    osc.stop(ctx.currentTime + 0.13);
+  } catch {
+    // ignore
+  }
+}
+
 // Speak character or sentence using Native Web Speech API
 export function speakText(text: string, lang: 'vi' | 'en' | 'ja' | 'zh') {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;

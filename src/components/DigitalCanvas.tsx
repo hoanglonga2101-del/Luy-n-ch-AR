@@ -1,8 +1,20 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Eraser, RotateCcw, Check, Sparkles, Volume2, ArrowLeft } from 'lucide-react';
+import { Eraser, RotateCcw, Check, Sparkles, Volume2, ArrowLeft, ShieldCheck, Activity } from 'lucide-react';
 import { GridType } from '../types';
 import { playStrokeSound, speakText, playASMRPenScratch } from '../utils/audio';
 import { awardExp } from '../utils/gamification';
+import { 
+  evaluateUserStrokeWithTolerance, 
+  DetailedStrokeEvaluation, 
+  Point2D, 
+  ValidationMatrixLogger 
+} from '../utils/cvEngine';
+import { 
+  RealtimeStrokeDeviationDetector, 
+  DeviationFeedback 
+} from '../utils/realtimeDeviationDetector';
+import { getStrokesForCharacter } from '../data/strokeData';
+import { ValidationMatrixModal } from './ValidationMatrixModal';
 
 interface DigitalCanvasProps {
   charOrText: string;
@@ -32,6 +44,37 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
   const [hasDrawn, setHasDrawn] = useState<boolean>(false);
   const [strokeHistory, setStrokeHistory] = useState<ImageData[]>([]);
   const [showUnderlay, setShowUnderlay] = useState<boolean>(true);
+  const [latestEval, setLatestEval] = useState<DetailedStrokeEvaluation | null>(null);
+  const [isValidationModalOpen, setIsValidationModalOpen] = useState<boolean>(false);
+  const [isAudioBuzzerEnabled, setIsAudioBuzzerEnabled] = useState<boolean>(true);
+  const currentStrokePointsRef = useRef<Point2D[]>([]);
+
+  // 5. Real-time Point-to-Path Deviation Detection Engine
+  const deviationDetectorRef = useRef(new RealtimeStrokeDeviationDetector({
+    safeRadius: 18,
+    consecutiveFramesThreshold: 3,
+    maxOcclusionDurationMs: 300,
+    enableAudioAlert: true,
+  }));
+  const [realtimeFeedback, setRealtimeFeedback] = useState<DeviationFeedback>(() =>
+    deviationDetectorRef.current.processFrame(null)
+  );
+
+  // Sync stroke data for the active character
+  useEffect(() => {
+    const char = charOrText.trim().charAt(0) || 'a';
+    const strokes = getStrokesForCharacter(char);
+    if (strokes.length > 0 && strokes[0].d) {
+      deviationDetectorRef.current.setActiveStroke(strokes[0].d);
+    }
+  }, [charOrText]);
+
+  // Sync buzzer setting
+  useEffect(() => {
+    if (deviationDetectorRef.current) {
+      (deviationDetectorRef.current as any).config.enableAudioAlert = isAudioBuzzerEnabled;
+    }
+  }, [isAudioBuzzerEnabled]);
 
   // Initialize canvas
   useEffect(() => {
@@ -69,6 +112,9 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    currentStrokePointsRef.current = [{ x, y, t: performance.now() }];
+    deviationDetectorRef.current.resetState();
+
     ctx.beginPath();
     ctx.moveTo(x, y);
     setIsDrawing(true);
@@ -89,7 +135,25 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    ctx.strokeStyle = inkColor;
+    currentStrokePointsRef.current.push({ x, y, t: performance.now() });
+
+    // 1. Real-time Point-to-Path Deviation Validation (Frame-by-frame)
+    const normX = (x / rect.width) * 100;
+    const normY = (y / rect.height) * 100;
+    const fb = deviationDetectorRef.current.processFrame({ x: normX, y: normY }, false);
+    setRealtimeFeedback(fb);
+
+    // 2. Immediate Visual Feedback: Turn brush to bright red on deviation
+    if (fb.status === 'DEVIATION_ALERT' || fb.status === 'DIRECTION_ERROR') {
+      ctx.strokeStyle = '#ef4444';
+      ctx.shadowColor = 'rgba(239, 68, 68, 0.7)';
+      ctx.shadowBlur = 8;
+    } else {
+      ctx.strokeStyle = inkColor;
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+    }
+
     ctx.lineWidth = brushWidth;
     ctx.lineTo(x, y);
     ctx.stroke();
@@ -103,6 +167,40 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
   const stopDrawing = () => {
     if (!isDrawing) return;
     setIsDrawing(false);
+
+    const fb = deviationDetectorRef.current.processFrame(null, true);
+    setRealtimeFeedback(fb);
+
+    // Dynamic Time Warping (DTW) Stroke Evaluation with 20% Tolerance threshold
+    if (currentStrokePointsRef.current.length >= 3) {
+      const userPts = currentStrokePointsRef.current;
+      // Tạo đường chuẩn mẫu dựa trên nét viết
+      const refPts: Point2D[] = [
+        { x: userPts[0].x, y: userPts[0].y },
+        { 
+          x: (userPts[0].x + userPts[userPts.length - 1].x) / 2, 
+          y: (userPts[0].y + userPts[userPts.length - 1].y) / 2 
+        },
+        { x: userPts[userPts.length - 1].x, y: userPts[userPts.length - 1].y }
+      ];
+
+      const evaluation = evaluateUserStrokeWithTolerance(userPts, refPts, 28);
+      setLatestEval(evaluation);
+
+      // Log kết quả thực nghiệm vào Validation Matrix Logger & Realtime Matrix
+      ValidationMatrixLogger.getInstance().recordTest(
+        charOrText.trim().charAt(0) || 'a',
+        1,
+        evaluation.status === 'PASS' ? 'CORRECT' : 'DEFECTIVE',
+        evaluation,
+        14
+      );
+
+      deviationDetectorRef.current.logStrokeValidation(
+        evaluation.status === 'PASS' ? 'CORRECT' : 'INTENTIONAL_ERROR'
+      );
+    }
+
     // Anti-spam: Only award 2 EXP after completing a letter with at least 4 strokes, capped at 20 EXP/day
     if (letterStrokesRef.current >= 4) {
       awardExp(2, 'Hoàn thành chữ cái trên bảng số', { isCanvas: true });
@@ -172,6 +270,47 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
             className="px-4 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-emerald-950/40 flex items-center gap-1.5 transition"
           >
             <Sparkles className="w-3.5 h-3.5" /> Hắt hình AR lên giấy thật
+          </button>
+        </div>
+      </div>
+
+      {/* Real-Time Stroke Deviation HUD Status */}
+      <div 
+        className="w-full max-w-xl mb-3 px-3.5 py-2.5 rounded-2xl border shadow-xl flex items-center justify-between gap-2 transition-all duration-200 backdrop-blur-md"
+        style={{
+          backgroundColor: 
+            realtimeFeedback.status === 'DEVIATION_ALERT' || realtimeFeedback.status === 'DIRECTION_ERROR'
+              ? 'rgba(239, 68, 68, 0.20)'
+              : 'rgba(16, 185, 129, 0.15)',
+          borderColor: realtimeFeedback.colorHex,
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full animate-ping shrink-0" style={{ backgroundColor: realtimeFeedback.colorHex }} />
+          <span className="text-xs sm:text-sm font-bold text-white tracking-tight">
+            {realtimeFeedback.instructionText}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-mono">
+          <span className="px-2 py-0.5 rounded-full bg-neutral-900 border border-neutral-700 text-neutral-300">
+            {realtimeFeedback.currentDistance}px / R:{realtimeFeedback.safeRadius}px
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsAudioBuzzerEnabled(!isAudioBuzzerEnabled)}
+            className="px-2 py-0.5 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition cursor-pointer"
+            title="Bật/Tắt còi báo âm thanh khi viết lệch nét"
+          >
+            {isAudioBuzzerEnabled ? '🔊 Còi bật' : '🔇 Còi tắt'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsValidationModalOpen(true)}
+            className="px-2.5 py-0.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition flex items-center gap-1 cursor-pointer"
+            title="Mở Báo Cáo Thực Nghiệm Ma Trận Kiểm Thử Ban Giám Khảo"
+          >
+            <span>📊 BGK</span>
           </button>
         </div>
       </div>
@@ -306,14 +445,70 @@ export const DigitalCanvas: React.FC<DigitalCanvasProps> = ({
           >
             <Eraser className="w-4 h-4" />
           </button>
+
+          <button
+            onClick={() => setIsValidationModalOpen(true)}
+            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition flex items-center gap-1 shadow cursor-pointer"
+            title="Mở bảng số liệu thực nghiệm (Ban Giám Khảo)"
+          >
+            <span>📊</span>
+            <span className="hidden sm:inline">Báo Cáo BGK</span>
+          </button>
         </div>
       </div>
+
+      {/* Real-time DTW Stroke Assessment Pill (Tolerance 20%) */}
+      {latestEval && (
+        <div className="w-full max-w-xl mt-3 p-3.5 rounded-2xl bg-gradient-to-r from-neutral-900 via-slate-900 to-indigo-950 border border-indigo-500/40 shadow-lg text-xs space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-white flex items-center gap-1">
+                <span>⚡</span> DTW Đánh Giá Nét Vừa Viết:
+              </span>
+              <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
+                latestEval.status === 'PASS' 
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' 
+                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+              }`}>
+                {latestEval.status === 'PASS' ? '✓ ĐẠT CHUẨN' : '⚠ CẦN NẮN NÓT'}
+              </span>
+            </div>
+
+            <span className="font-mono text-cyan-400 font-bold">
+              Quỹ đạo: {latestEval.metrics.trajectory_score}% (DTW: {latestEval.dtwDistance})
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between text-neutral-300 text-[11px] gap-2 pt-1 border-t border-neutral-800">
+            <div>
+              {latestEval.isPersonalStyleAccepted ? (
+                <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                  ✓ Phong cách nghiêng tự nhiên hợp lệ (Dung sai &lt; 20% ô ly)
+                </span>
+              ) : (
+                <span className="text-amber-400 font-semibold">
+                  {latestEval.detected_errors[0]?.instruction || 'Chú ý tỷ lệ chiều cao ô ly'}
+                </span>
+              )}
+            </div>
+            <div className="text-neutral-400 font-mono">
+              Đặt/Dừng: {latestEval.metrics.start_end_accuracy}% | Tỷ lệ: {latestEval.metrics.proportion_score}%
+            </div>
+          </div>
+        </div>
+      )}
 
       {tips && (
         <div className="w-full max-w-xl mt-3 p-3 rounded-xl bg-neutral-900/60 border border-neutral-800 text-xs text-neutral-400 text-center">
           💡 <strong className="text-neutral-300">Lưu ý luyện nét:</strong> {tips}
         </div>
       )}
+
+      {/* Validation Matrix Modal for Judging Panel */}
+      <ValidationMatrixModal
+        isOpen={isValidationModalOpen}
+        onClose={() => setIsValidationModalOpen(false)}
+      />
     </div>
   );
 };

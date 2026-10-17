@@ -39,6 +39,7 @@ interface HeaderProps {
   onSelectDeviceMode?: (mode: DeviceMode) => void;
   onOpenEyeTimer?: () => void;
   onOpenProfileModal?: () => void;
+  onOpenValidationModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -51,6 +52,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectDeviceMode,
   onOpenEyeTimer,
   onOpenProfileModal,
+  onOpenValidationModal,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false);
@@ -542,6 +544,19 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <Eye className="w-4 h-4 text-cyan-400 shrink-0" />
               <span className="hidden xl:inline">Bảo vệ mắt</span>
+            </button>
+          )}
+
+          {/* Validation Matrix for Judging Panel (BGK) */}
+          {onOpenValidationModal && (
+            <button
+              id="header-validation-matrix-btn"
+              onClick={onOpenValidationModal}
+              className="h-10 sm:h-12 px-2.5 sm:px-3 rounded-2xl bg-gradient-to-r from-indigo-950/70 via-purple-950/70 to-indigo-950/70 hover:brightness-110 border-2 border-indigo-600/50 text-indigo-300 flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-sm text-xs font-bold"
+              title="Báo cáo thực nghiệm & Ma trận đánh giá (Ban Giám Khảo)"
+            >
+              <span>📊</span>
+              <span className="hidden lg:inline">Báo cáo BGK</span>
             </button>
           )}
 
